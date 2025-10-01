@@ -2020,7 +2020,15 @@ static void smp_timeout(struct k_work *work)
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
 	struct bt_smp *smp = CONTAINER_OF(dwork, struct bt_smp, work);
 
-	LOG_ERR("SMP Timeout");
+	/* if number of flags or supported commands exceed capacity of one
+	 * atomic variable following error log shall be extended
+	 */
+	BUILD_ASSERT(ATOMIC_BITMAP_SIZE(SMP_NUM_FLAGS) == 1);
+	BUILD_ASSERT(ATOMIC_BITMAP_SIZE(BT_SMP_NUM_CMDS) == 1);
+
+	LOG_ERR("SMP Timeout (flags:0x%08x allowed_cmds:0x%08x)",
+		(unsigned int)atomic_get(&smp->flags[0]),
+		(unsigned int)atomic_get(&smp->allowed_cmds[0]));
 
 	smp_pairing_complete(smp, BT_SMP_ERR_UNSPECIFIED);
 
@@ -4130,6 +4138,7 @@ static uint8_t smp_id_add_replace(struct bt_smp *smp, struct bt_keys *new_bond)
 struct addr_match {
 	const bt_addr_le_t *rpa;
 	const bt_addr_le_t *id_addr;
+	struct bt_keys *keys;
 };
 
 static void convert_to_id_on_match(struct bt_conn *conn, void *data)
@@ -4138,6 +4147,10 @@ static void convert_to_id_on_match(struct bt_conn *conn, void *data)
 
 	if (bt_addr_le_eq(&conn->le.dst, addr_match->rpa)) {
 		bt_addr_le_copy(&conn->le.dst, addr_match->id_addr);
+
+		if (conn->le.keys && conn->le.keys != addr_match->keys) {
+			bt_addr_le_copy(&conn->le.keys->addr, addr_match->id_addr);
+		}
 	}
 }
 
@@ -4205,6 +4218,7 @@ static uint8_t smp_ident_addr_info(struct bt_smp *smp, struct net_buf *buf)
 				struct addr_match addr_match = {
 					.rpa = &conn->le.dst,
 					.id_addr = &req->addr,
+					.keys = keys,
 				};
 
 				bt_conn_foreach(BT_CONN_TYPE_LE,
@@ -6340,7 +6354,10 @@ static int bt_smp_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan)
 	return -ENOMEM;
 }
 
-BT_L2CAP_CHANNEL_DEFINE(smp_fixed_chan, BT_L2CAP_CID_SMP, bt_smp_accept, NULL);
+BT_L2CAP_FIXED_CHANNEL_DEFINE(smp_fixed_chan) = {
+	.cid = BT_L2CAP_CID_SMP,
+	.accept = bt_smp_accept,
+};
 #if defined(CONFIG_BT_CLASSIC)
 BT_L2CAP_BR_CHANNEL_DEFINE(smp_br_fixed_chan, BT_L2CAP_CID_BR_SMP,
 			bt_smp_br_accept);

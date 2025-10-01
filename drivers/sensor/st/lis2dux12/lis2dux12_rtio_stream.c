@@ -102,8 +102,11 @@ void lis2dux12_submit_stream(const struct device *dev, struct rtio_iodev_sqe *io
 /*
  * Called by bus driver to complete the sqe.
  */
-static void lis2dux12_complete_op_cb(struct rtio *r, const struct rtio_sqe *sqe, void *arg)
+static void lis2dux12_complete_op_cb(struct rtio *r, const struct rtio_sqe *sqe,
+				     int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = arg;
 	struct lis2dux12_data *lis2dux12 = dev->data;
 
@@ -119,8 +122,11 @@ static void lis2dux12_complete_op_cb(struct rtio *r, const struct rtio_sqe *sqe,
  * Called by bus driver to complete the LIS2DUX12_FIFO_STATUS read op (2 bytes).
  * If FIFO threshold or FIFO full events are active it reads all FIFO entries.
  */
-static void lis2dux12_read_fifo_cb(struct rtio *r, const struct rtio_sqe *sqe, void *arg)
+static void lis2dux12_read_fifo_cb(struct rtio *r, const struct rtio_sqe *sqe,
+				   int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = arg;
 	struct lis2dux12_data *lis2dux12 = dev->data;
 	const struct lis2dux12_config *cfg = dev->config;
@@ -316,8 +322,11 @@ static void lis2dux12_read_fifo_cb(struct rtio *r, const struct rtio_sqe *sqe, v
  * Called by bus driver to complete the LIS2DUX12_STATUS_REG read op.
  * If drdy_xl is active it reads XL data (6 bytes) from LIS2DUX12_OUTX_L_A reg.
  */
-static void lis2dux12_read_status_cb(struct rtio *r, const struct rtio_sqe *sqe, void *arg)
+static void lis2dux12_read_status_cb(struct rtio *r, const struct rtio_sqe *sqe,
+				     int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = arg;
 	struct lis2dux12_data *lis2dux12 = dev->data;
 	struct rtio *rtio = lis2dux12->rtio_ctx;
@@ -363,8 +372,9 @@ static void lis2dux12_read_status_cb(struct rtio *r, const struct rtio_sqe *sqe,
 		return;
 	}
 
-	if (data_ready->opt == SENSOR_STREAM_DATA_NOP ||
-	    data_ready->opt == SENSOR_STREAM_DATA_DROP) {
+	if (data_ready != NULL &&
+	    (data_ready->opt == SENSOR_STREAM_DATA_NOP ||
+	     data_ready->opt == SENSOR_STREAM_DATA_DROP)) {
 		uint8_t *buf;
 		uint32_t buf_len;
 
@@ -389,6 +399,8 @@ static void lis2dux12_read_status_cb(struct rtio *r, const struct rtio_sqe *sqe,
 		rtio_iodev_sqe_ok(lis2dux12->streaming_sqe, 0);
 		lis2dux12->streaming_sqe = NULL;
 		gpio_pin_interrupt_configure_dt(irq_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+
+		return;
 	}
 
 	/*

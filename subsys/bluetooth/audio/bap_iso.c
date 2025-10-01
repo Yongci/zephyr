@@ -26,6 +26,7 @@
 #include "bap_iso.h"
 #include "audio_internal.h"
 #include "bap_endpoint.h"
+#include "bap_internal.h"
 
 LOG_MODULE_REGISTER(bt_bap_iso, CONFIG_BT_BAP_ISO_LOG_LEVEL);
 
@@ -177,7 +178,7 @@ void bt_bap_setup_iso_data_path(struct bt_bap_stream *stream)
 	struct bt_bap_ep *ep = stream->ep;
 	struct bt_bap_iso *bap_iso = ep->iso;
 	const bool is_unicast_client =
-		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_ep_is_unicast_client(ep);
+		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_unicast_client_has_ep(ep);
 	struct bt_bap_iso_dir *iso_dir = bap_iso_get_iso_dir(is_unicast_client, bap_iso, ep->dir);
 	struct bt_iso_chan_path path = {0};
 	uint8_t dir;
@@ -216,7 +217,7 @@ void bt_bap_remove_iso_data_path(struct bt_bap_stream *stream)
 	struct bt_bap_ep *ep = stream->ep;
 	struct bt_bap_iso *bap_iso = ep->iso;
 	const bool is_unicast_client =
-		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_ep_is_unicast_client(ep);
+		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_unicast_client_has_ep(ep);
 	struct bt_bap_iso_dir *iso_dir = bap_iso_get_iso_dir(is_unicast_client, bap_iso, ep->dir);
 	uint8_t dir;
 	int err;
@@ -235,7 +236,7 @@ void bt_bap_remove_iso_data_path(struct bt_bap_stream *stream)
 
 static bool is_unicast_client_ep(struct bt_bap_ep *ep)
 {
-	return IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_ep_is_unicast_client(ep);
+	return IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_unicast_client_has_ep(ep);
 }
 
 void bt_bap_iso_bind_ep(struct bt_bap_iso *iso, struct bt_bap_ep *ep)
@@ -310,8 +311,8 @@ void bt_bap_iso_bind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *st
 
 	__ASSERT_NO_MSG(stream != NULL);
 	__ASSERT_NO_MSG(bap_iso != NULL);
-	__ASSERT(stream->bap_iso == NULL, "stream %p bound with bap_iso %p already", stream,
-		 stream->bap_iso);
+	__ASSERT(stream->iso == NULL, "stream %p bound with bap_iso %p already", stream,
+		 CONTAINER_OF(stream->iso, struct bt_bap_iso, chan));
 
 	LOG_DBG("bap_iso %p stream %p dir %s", bap_iso, stream, bt_audio_dir_str(dir));
 
@@ -326,17 +327,18 @@ void bt_bap_iso_bind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *st
 		 bap_iso_ep->stream);
 	bap_iso_ep->stream = stream;
 
-	stream->bap_iso = bt_bap_iso_ref(bap_iso);
+	stream->iso = &bt_bap_iso_ref(bap_iso)->chan;
 }
 
-void bt_bap_iso_unbind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *stream,
-			      enum bt_audio_dir dir)
+void bt_bap_iso_unbind_stream(struct bt_bap_stream *stream, enum bt_audio_dir dir)
 {
 	struct bt_bap_iso_dir *bap_iso_ep;
+	struct bt_bap_iso *bap_iso;
 
 	__ASSERT_NO_MSG(stream != NULL);
-	__ASSERT_NO_MSG(bap_iso != NULL);
-	__ASSERT(stream->bap_iso != NULL, "stream %p not bound with an bap_iso", stream);
+	__ASSERT(stream->iso != NULL, "stream %p not bound with an bap_iso", stream);
+
+	bap_iso = CONTAINER_OF(stream->iso, struct bt_bap_iso, chan);
 
 	LOG_DBG("bap_iso %p stream %p dir %s", bap_iso, stream, bt_audio_dir_str(dir));
 
@@ -348,11 +350,12 @@ void bt_bap_iso_unbind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *
 	}
 
 	__ASSERT(bap_iso_ep->stream == stream, "bap_iso %p (%p) not bound with stream %p (%p)",
-		 bap_iso, bap_iso_ep->stream, stream, stream->bap_iso);
+		 bap_iso, bap_iso_ep->stream, stream,
+		 CONTAINER_OF(stream->iso, struct bt_bap_iso, chan));
 	bap_iso_ep->stream = NULL;
 
 	bt_bap_iso_unref(bap_iso);
-	stream->bap_iso = NULL;
+	stream->iso = NULL;
 }
 
 struct bt_bap_stream *bt_bap_iso_get_stream(struct bt_bap_iso *iso, enum bt_audio_dir dir)

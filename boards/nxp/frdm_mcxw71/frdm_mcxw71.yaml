@@ -12,6 +12,7 @@ supported:
   - can
   - counter
   - flash
+  - flexio
   - gpio
   - i2c
   - pinctrl
@@ -20,3 +21,5 @@ supported:
   - spi
   - uart
   - watchdog
+  - netif:openthread
+vendor: nxp

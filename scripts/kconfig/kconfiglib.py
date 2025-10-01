@@ -9,7 +9,7 @@ Kconfiglib is a Python 2/3 library for scripting and extracting information
 from Kconfig (https://www.kernel.org/doc/Documentation/kbuild/kconfig-language.txt)
 configuration systems.
 
-See the homepage at https://github.com/ulfalizer/Kconfiglib for a longer
+See the homepage at https://github.com/zephyrproject-rtos/Kconfiglib for a longer
 overview.
 
 Since Kconfiglib 12.0.0, the library version is available in
@@ -24,8 +24,8 @@ For the Linux kernel, a handy interface is provided by the
 scripts/kconfig/Makefile patch, which can be applied with either 'git am' or
 the 'patch' utility:
 
-  $ wget -qO- https://raw.githubusercontent.com/ulfalizer/Kconfiglib/master/makefile.patch | git am
-  $ wget -qO- https://raw.githubusercontent.com/ulfalizer/Kconfiglib/master/makefile.patch | patch -p1
+  $ wget -qO- https://raw.githubusercontent.com/zephyrproject-rtos/Kconfiglib/master/makefile.patch | git am
+  $ wget -qO- https://raw.githubusercontent.com/zephyrproject-rtos/Kconfiglib/master/makefile.patch | patch -p1
 
 Warning: Not passing -p1 to patch will cause the wrong file to be patched.
 
@@ -39,7 +39,7 @@ on how you can use Kconfiglib without it.
 If you do not wish to install Kconfiglib via pip, the Makefile patch is set up
 so that you can also just clone Kconfiglib into the kernel root:
 
-  $ git clone git://github.com/ulfalizer/Kconfiglib.git
+  $ git clone git://github.com/zephyrproject-rtos/Kconfiglib.git
   $ git am Kconfiglib/makefile.patch  (or 'patch -p1 < Kconfiglib/makefile.patch')
 
 Warning: The directory name Kconfiglib/ is significant in this case, because
@@ -540,8 +540,7 @@ Preferably, user-defined functions should be stateless.
 Feedback
 ========
 
-Send bug reports, suggestions, and questions to ulfalizer a.t Google's email
-service, or open a ticket on the GitHub page.
+Send bug reports, suggestions, and questions to the GitHub page.
 """
 import errno
 import importlib
@@ -1087,10 +1086,10 @@ class Kconfig(object):
             self.top_node.next = None
         except UnicodeDecodeError as e:
             _decoding_error(e, self.filename)
-
-        # Close the top-level Kconfig file. __self__ fetches the 'file' object
-        # for the method.
-        self._readline.__self__.close()
+        finally:
+            # Close the top-level Kconfig file. __self__ fetches the 'file' object
+            # for the method.
+            self._readline.__self__.close()
 
         self._parsing_kconfigs = False
 
@@ -2998,8 +2997,10 @@ class Kconfig(object):
 
                 for filename in filenames:
                     self._enter_file(filename)
-                    prev = self._parse_block(None, parent, prev)
-                    self._leave_file()
+                    try:
+                        prev = self._parse_block(None, parent, prev)
+                    finally:
+                        self._leave_file()
 
             elif t0 is end_token:
                 # Reached the end of the block. Terminate the final node and

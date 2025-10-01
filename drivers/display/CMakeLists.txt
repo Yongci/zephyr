@@ -41,6 +41,7 @@ zephyr_library_sources_ifdef(CONFIG_NT35510		display_nt35510.c)
 zephyr_library_sources_ifdef(CONFIG_RENESAS_RA_GLCDC		display_renesas_ra.c)
 zephyr_library_sources_ifdef(CONFIG_ILI9806E_DSI		display_ili9806e_dsi.c)
 zephyr_library_sources_ifdef(CONFIG_ST7701 display_st7701.c)
+zephyr_library_sources_ifdef(CONFIG_LPM013M126 display_lpm013m126.c)
 
 zephyr_library_sources_ifdef(CONFIG_MICROBIT_DISPLAY
 	mb_display.c
@@ -49,9 +50,5 @@ zephyr_library_sources_ifdef(CONFIG_MICROBIT_DISPLAY
 
 if (CONFIG_SDL_DISPLAY)
 	zephyr_library_sources(display_sdl.c)
-	if (CONFIG_NATIVE_APPLICATION)
-		zephyr_library_sources(display_sdl_bottom.c)
-	else()
-		target_sources(native_simulator INTERFACE display_sdl_bottom.c)
-	endif()
+	target_sources(native_simulator INTERFACE display_sdl_bottom.c)
 endif()
