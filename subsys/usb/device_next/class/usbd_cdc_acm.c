@@ -708,7 +708,7 @@ static void cdc_acm_rx_fifo_handler(struct k_work *work)
 	}
 
 	if (ring_buf_space_get(data->rx_fifo.rb) < cdc_acm_get_bulk_mps(c_data)) {
-		LOG_INF("RX buffer to small, throttle");
+		LOG_INF("RX buffer too small, throttle");
 		return;
 	}
 
@@ -877,14 +877,14 @@ static int cdc_acm_irq_is_pending(const struct device *dev)
 	return 0;
 }
 
-static int cdc_acm_irq_update(const struct device *dev)
+static void cdc_acm_irq_update(const struct device *dev)
 {
 	struct cdc_acm_uart_data *const data = dev->data;
 
 	if (!check_wq_ctx(dev)) {
 		LOG_WRN("Invoked by inappropriate context");
 		__ASSERT_NO_MSG(false);
-		return 0;
+		return;
 	}
 
 	if (atomic_test_bit(&data->state, CDC_ACM_IRQ_RX_ENABLED) &&
@@ -900,8 +900,6 @@ static int cdc_acm_irq_update(const struct device *dev)
 	} else {
 		data->tx_fifo.irq = false;
 	}
-
-	return 1;
 }
 
 /*

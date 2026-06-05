@@ -22,6 +22,7 @@
 #include <zephyr/modem/pipe.h>
 #include <zephyr/modem/pipelink.h>
 #include <zephyr/modem/ppp.h>
+#include <zephyr/sys/atomic.h>
 
 /**
  * @cond INTERNAL_HIDDEN
@@ -99,6 +100,7 @@ enum modem_cellular_event {
 	MODEM_CELLULAR_EVENT_MODEM_READY,
 	MODEM_CELLULAR_EVENT_APN_SET,
 	MODEM_CELLULAR_EVENT_RING,
+	MODEM_CELLULAR_EVENT_PERIODIC_KICK,
 };
 
 struct modem_cellular_event_cb {
@@ -142,6 +144,7 @@ struct modem_cellular_data {
 	enum cellular_registration_status registration_status_gsm;
 	enum cellular_registration_status registration_status_gprs;
 	enum cellular_registration_status registration_status_lte;
+	enum cellular_access_technology access_tech;
 	uint8_t rssi;
 	uint8_t rsrp;
 	uint8_t rsrq;
@@ -178,6 +181,11 @@ struct modem_cellular_data {
 
 	/* Ring interrupt */
 	struct gpio_callback ring_gpio_cb;
+
+	/** Set when the periodic chat script is paused. */
+	atomic_t periodic_paused;
+	/** Set when a TIMEOUT is swallowed while paused; cleared on KICK. */
+	bool periodic_timeout_skipped;
 };
 
 struct modem_cellular_user_pipe {
@@ -211,33 +219,41 @@ struct modem_cellular_config_scripts {
 	const struct modem_chat_script *shutdown;     /**< script for shutting down the modem */
 };
 
-struct modem_cellular_config_unsol {
-	const struct modem_chat_match *matches;
-	uint16_t size;
+/**
+ * @brief Vendor specific configuration that does not come from devicetree
+ */
+struct modem_cellular_vendor_config {
+	struct modem_cellular_config_scripts scripts;
+	struct {
+		const struct modem_chat_match *matches;
+		uint16_t size;
+	} unsol_matches;
+	uint16_t power_pulse_duration_ms;
+	uint16_t reset_pulse_duration_ms;
+	uint16_t startup_time_ms;
+	uint16_t shutdown_time_ms;
+	/* Force the `autostart` property regardless of devicetree */
+	bool force_autostart;
 };
 
 struct modem_cellular_config {
 	const struct device *uart;
+	const struct modem_cellular_vendor_config *vendor;
 	struct gpio_dt_spec power_gpio;
 	struct gpio_dt_spec reset_gpio;
 	struct gpio_dt_spec wake_gpio;
 	struct gpio_dt_spec ring_gpio;
 	struct gpio_dt_spec dtr_gpio;
-	uint16_t power_pulse_duration_ms;
-	uint16_t reset_pulse_duration_ms;
-	uint16_t startup_time_ms;
-	uint16_t shutdown_time_ms;
 	bool autostarts;
 	bool hold_reset_on_suspend;
 	bool reset_on_resume;
 	bool reset_on_recovery;
 	bool cmux_enable_runtime_power_save;
 	bool cmux_close_pipe_on_power_save;
+	bool cmux_no_powersave_handshake;
 	bool use_default_pdp_context;
 	bool use_default_apn;
 	k_timeout_t cmux_idle_timeout;
-	const struct modem_cellular_config_scripts *scripts;
-	const struct modem_cellular_config_unsol *unsol;
 	struct modem_cellular_user_pipe *user_pipes;
 	uint8_t user_pipes_size;
 };
@@ -250,6 +266,9 @@ int modem_cellular_init(const struct device *dev);
 int modem_cellular_pm_action(const struct device *dev, enum pm_device_action action);
 
 extern const struct cellular_driver_api modem_cellular_api;
+
+void modem_cellular_emit_event(struct modem_cellular_data *data, enum cellular_event evt,
+			       const void *payload);
 
 void modem_cellular_chat_callback_handler(struct modem_chat *chat,
 						 enum modem_chat_script_result result,
@@ -381,7 +400,7 @@ void modem_cellular_chat_on_modem_ready(struct modem_chat *chat, char **argv, ui
 				  MODEM_CHAT_MATCH("NO DIALTONE", "", NULL))
 
 /* Common URC match entries shared by every cellular modem driver.
- * Use as the body of a MODEM_CELLULAR_UNSOL_DEFINE() expansion so vendor
+ * Use as the body of a MODEM_CHAT_MATCHES_DEFINE() expansion so vendor
  * drivers can extend the table with their own vendor-specific URCs.
  */
 #define MODEM_CELLULAR_COMMON_UNSOL_MATCHES							   \
@@ -392,43 +411,18 @@ void modem_cellular_chat_on_modem_ready(struct modem_chat *chat, char **argv, ui
 	MODEM_CHAT_MATCH("APP RDY", "", modem_cellular_chat_on_modem_ready),			   \
 	MODEM_CHAT_MATCH("Ready", "", modem_cellular_chat_on_modem_ready)
 
-/**
- * @brief Define a cellular modem unsol-match table.
- *
- * Generates the underlying match array and the
- * modem_cellular_config_unsol descriptor that modem_cellular_init reads
- * when wiring the chat instance.
- *
- * @param[in] name Descriptor name; referenced from the driver's config.
- * @param[in] ...  MODEM_CHAT_MATCH() entries; typically begins with
- *                 @ref MODEM_CELLULAR_COMMON_UNSOL_MATCHES.
- *
- * @see struct modem_cellular_config_unsol
- */
-#define MODEM_CELLULAR_UNSOL_DEFINE(name, ...)							   \
-	MODEM_CHAT_MATCHES_DEFINE(name##_matches, __VA_ARGS__);					   \
-	static const struct modem_cellular_config_unsol name = {				   \
-		.matches = name##_matches,							   \
-		.size = ARRAY_SIZE(name##_matches),						   \
-	}
-
 /* Helper to define modem instance */
-#define MODEM_CELLULAR_DEFINE_INSTANCE(inst, power_ms, reset_ms, startup_ms, shutdown_ms, start,   \
-				       _scripts, _unsol)                                           \
-	BUILD_ASSERT(_scripts != NULL, "scripts must be non-NULL");                                \
-	BUILD_ASSERT(_unsol != NULL, "unsol must be non-NULL");                                    \
+#define MODEM_CELLULAR_DEFINE_INSTANCE(inst, vendor_config)                                        \
+	BUILD_ASSERT(vendor_config != NULL, "vendor_config must be non-NULL");                     \
 	static const struct modem_cellular_config MODEM_CELLULAR_INST_NAME(config, inst) = {       \
 		.uart = DEVICE_DT_GET(DT_INST_BUS(inst)),                                          \
+		.vendor = vendor_config,                                                           \
 		.power_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, mdm_power_gpios, {}),                 \
 		.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, mdm_reset_gpios, {}),                 \
 		.wake_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, mdm_wake_gpios, {}),                   \
 		.ring_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, mdm_ring_gpios, {}),                   \
 		.dtr_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, mdm_dtr_gpios, {}),                     \
-		.power_pulse_duration_ms = (power_ms),                                             \
-		.reset_pulse_duration_ms = (reset_ms),                                             \
-		.startup_time_ms = (startup_ms),                                                   \
-		.shutdown_time_ms = (shutdown_ms),                                                 \
-		.autostarts = DT_INST_PROP_OR(inst, autostarts, (start)),                          \
+		.autostarts = DT_INST_PROP(inst, autostarts),                                      \
 		.hold_reset_on_suspend =                                                           \
 			DT_INST_ENUM_HAS_VALUE(inst, zephyr_mdm_reset_behavior, hold_on_suspend),  \
 		.reset_on_resume = DT_INST_ENUM_HAS_VALUE(inst, zephyr_mdm_reset_behavior,         \
@@ -439,11 +433,11 @@ void modem_cellular_chat_on_modem_ready(struct modem_chat *chat, char **argv, ui
 			DT_INST_PROP_OR(inst, cmux_enable_runtime_power_save, 0),                  \
 		.cmux_close_pipe_on_power_save =                                                   \
 			DT_INST_PROP_OR(inst, cmux_close_pipe_on_power_save, 0),                   \
+		.cmux_no_powersave_handshake =                                                     \
+			DT_INST_PROP_OR(inst, cmux_no_powersave_handshake, 0),                     \
 		.use_default_pdp_context = DT_INST_PROP_OR(inst, zephyr_use_default_pdp_ctx, 0),   \
 		.use_default_apn = DT_INST_PROP_OR(inst, zephyr_use_default_apn, 0),               \
 		.cmux_idle_timeout = K_MSEC(DT_INST_PROP_OR(inst, cmux_idle_timeout_ms, 0)),       \
-		.scripts = _scripts,                                                               \
-		.unsol = _unsol,                                                                   \
 		.user_pipes = MODEM_CELLULAR_GET_USER_PIPES(inst),                                 \
 		.user_pipes_size = ARRAY_SIZE(MODEM_CELLULAR_GET_USER_PIPES(inst)),                \
 	};                                                                                         \
@@ -457,10 +451,52 @@ void modem_cellular_chat_on_modem_ready(struct modem_chat *chat, char **argv, ui
 
 /** @} */
 
+/** @endcond */
+
+/**
+ * @addtogroup modem_cellular
+ * @{
+ */
+
+/**
+ * @brief Pause the cellular_modem driver's periodic chat script.
+ *
+ * Scheduled periodic-script runs are suppressed until
+ * cellular_modem_resume_periodic_script() is called. An in-flight script
+ * invocation at the time of this call is allowed to complete; suppression
+ * takes effect from the next scheduled run.
+ *
+ * @param dev Cellular device instance backed by the cellular_modem driver
+ *
+ * @retval 0         Success
+ * @retval -ENOTSUP  Device has no periodic chat script configured
+ * @retval -EINVAL   Periodic script is already paused
+ *
+ * @see cellular_modem_resume_periodic_script
+ */
+int cellular_modem_pause_periodic_script(const struct device *dev);
+
+/**
+ * @brief Resume the cellular_modem driver's periodic chat script.
+ *
+ * Re-enables the periodic script. If at least one scheduled run was
+ * skipped while paused, the script fires immediately; otherwise the
+ * periodic timer restarts at the configured interval.
+ *
+ * @param dev Cellular device instance backed by the cellular_modem driver
+ *
+ * @retval 0         Success
+ * @retval -ENOTSUP  Device has no periodic chat script configured
+ * @retval -EINVAL   Periodic script is not currently paused
+ *
+ * @see cellular_modem_pause_periodic_script
+ */
+int cellular_modem_resume_periodic_script(const struct device *dev);
+
+/** @} */
+
 #ifdef __cplusplus
 }
 #endif
-
-/** @endcond */
 
 #endif /* ZEPHYR_INCLUDE_DRIVERS_CELLULAR_INTERNAL_H_ */
