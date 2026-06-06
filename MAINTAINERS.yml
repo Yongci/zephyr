@@ -2083,6 +2083,7 @@ Documentation Infrastructure:
     - TomasBarakNXP
     - anangl
     - Peterson-Brett
+    - mariopaja
   files:
     - doc/hardware/peripherals/audio/i2s.rst
     - drivers/i2s/
@@ -2327,6 +2328,7 @@ Documentation Infrastructure:
   collaborators:
     - SeppoTakalo
     - zafersn
+    - wkhadgar
   files:
     - drivers/modem/
     - tests/drivers/build_all/modem/
@@ -3910,6 +3912,7 @@ Modem:
     - bjarki-andreasen
   collaborators:
     - SeppoTakalo
+    - wkhadgar
   files:
     - subsys/modem/
     - include/zephyr/modem/
@@ -4563,6 +4566,7 @@ Networking:
     - rlubos
   collaborators:
     - BeckmaR
+    - M1cha
   files:
     - subsys/net/lib/mqtt_sn/
     - tests/net/lib/mqtt_sn*/
