@@ -32,6 +32,18 @@ Kernel
 * ``_k_neg_eagain`` has been renamed to ``_errno_neg_egain`` as ``errno`` has been migrated out of
   kernel into ``lib/libc/common``.
 
+* When :kconfig:option:`CONFIG_SCHED_CPU_MASK_PIN_ONLY` is enabled, calling
+  :c:func:`k_thread_cpu_mask_clear`, :c:func:`k_thread_cpu_mask_enable_all`,
+  or :c:func:`k_thread_cpu_mask_disable` now triggers an assertion instead of
+  silently producing an invalid state.  Applications using these functions
+  in PIN_ONLY mode must be updated to use :c:func:`k_thread_cpu_pin` instead.
+
+* :kconfig:option:`CONFIG_SCHED_CPU_MASK` is no longer restricted to
+  :kconfig:option:`CONFIG_SCHED_SIMPLE`.  Projects that previously selected
+  ``SCHED_SCALABLE`` or ``SCHED_MULTIQ`` and worked around the limitation by
+  keeping ``SCHED_SIMPLE`` for affinity purposes can now use their preferred
+  backend directly.
+
 Boards
 ******
 
@@ -83,6 +95,17 @@ Boards
   Applications that relied on ``CONFIG_GPIO=y`` being the default will need to enable
   the option explicitly. (:github:`109468`)
 
+* Ezurio bl54l15u_dvk has been removed. The bl54l15_dvk remains available and supports
+  both the bl54l15 and bl54l15u variants of the module, with the same features.
+  Boards using the bl54l15u_dvk should migrate to bl54l15_dvk/nrf54l15/cpuapp or
+  bl54l15_dvk/nrf54l15/cpuflpr as appropriate.
+
+* The default MCUboot signature type for the boards stm32h573i_dk and b_u585i_iot02a has
+  been changed from RSA-3072 to EC-P256. This affects builds that have MCUboot enabled in
+  TF-M (:kconfig:option:`CONFIG_TFM_BL2`). If you wish to keep using RSA-3072, you need
+  to set :kconfig:option:`CONFIG_TFM_MCUBOOT_SIGNATURE_TYPE` to ``"RSA-3072"``.
+  Otherwise, make sure to have your own signing keys of the signature type in use.
+
 Device Drivers and Devicetree
 *****************************
 
@@ -112,6 +135,17 @@ ADC
 * The ``girqs`` and ``pcrs`` properties (array type) of :dtcompatible:`microchip,xec-adc` have been
   replaced by encoded ``girqs`` (using ``MCHP_XEC_ECIA_GIRQ_ENC`` macros) and ``pcr-scr`` (int type)
   for encoded PCR register index and bit position (:github:`105658`).
+
+Audio Codec
+===========
+
+* The audio codec driver backend API now uses :c:struct:`audio_codec_driver_api` instead of
+  ``struct audio_codec_api``.
+
+  Out-of-tree audio codec drivers must rename their backend API struct definitions and switch
+  their API instances to ``DEVICE_API(audio_codec, ...)``. See :github:`110631` for examples of how
+  in-tree drivers have been updated. Application code using the ``audio_codec_...`` APIs is not
+  impacted.
 
 Clock Control
 =============
@@ -160,6 +194,13 @@ Display
   on the SDL pseudo-device node using the PANEL_PIXEL_FORMAT_* macros from
   :zephyr_file:`include/zephyr/dt-bindings/display/panel.h`. (:github:`104099`)
 
+* The LVGL ``CONFIG_LV_Z_COLOR_24_BGR_TO_RGB`` Kconfig option has been removed. LVGL's RGB888 color
+  format stores bytes in memory as blue, green, red, which matches the in-memory layout of
+  :c:enumerator:`PIXEL_FORMAT_RGB_888`, so no channel swap is performed for displays reporting that
+  format. Displays whose framebuffer instead expects a red, green, blue byte order must now report
+  :c:enumerator:`PIXEL_FORMAT_BGR_888`, for which the LVGL glue performs the red/blue channel swap
+  automatically.
+
 DMA
 ===
 
@@ -207,11 +248,34 @@ Ethernet
   :kconfig:option:`CONFIG_PTP_CLOCK_NATIVE` is enabled by default when the
   :dtcompatible:`zephyr,native-ptp-clock` compatible is present.
 
+* ``port_phylink_change`` of the :c:struct:`dsa_api` is now optional.
+  The DSA driver no longer needs to call :c:func:`net_eth_carrier_on` or
+  :c:func:`net_eth_carrier_off` on PHY link change, this is now handled by the DSA core.
+  The ``void *user_data`` argument of ``port_phylink_change`` has been changed to
+  ``const struct device *dev``, so it no longer needs to be cast to obtain the device pointer.
+  Out-of-tree DSA drivers must update their ``port_phylink_change`` callback to match the new API and
+  can remove any calls to :c:func:`net_eth_carrier_on` or :c:func:`net_eth_carrier_off` from it.
+  (:github:`109671`)
+
+* The MAC address of ethernet interfaces is now checked for validity, when bringing the interface up
+  with :c:func:`net_if_up`. If the MAC address is invalid, the interface will fail to come up and an
+  error will be logged. This check is done before the ``start`` function of the
+  :c:struct:`ethernet_api` is called. This also applies to native wifi drivers. (:github:`110435`)
+
 Flash
 =====
 * :dtcompatible:`jedec,spi-nand` now requires a ``plane-bytes`` property, which indicates the size
   of each plane in the flash device. For devices with a single plane, this should be set to the
   same value as ``size-bytes``.
+
+Fuel Gauge
+==========
+
+* Various fuel gauge property enums and union fields have been deprecated in
+  favor of new versions with explicit unit suffixes. Applications and drivers
+  should migrate to the unit-suffixed names. For example,
+  ``FUEL_GAUGE_CURRENT`` (``val.current``) is replaced by
+  ``FUEL_GAUGE_CURRENT_UA`` (``val.current_ua``).
 
 GPIO
 ====
@@ -287,11 +351,10 @@ Interrupt Controllers
 NXP
 ===
 
-* :kconfig:option:`CONFIG_MCUX_LPTMR_TIMER` no longer defaults to ``y`` based on the
-  ``/chosen/zephyr,system-timer`` chosen node being compatible with
-  :dtcompatible:`nxp,lptmr`. Out-of-tree SoCs and boards that rely on the LPTMR
-  as the system timer must now explicitly default the symbol in their
-  ``Kconfig.defconfig`` (for example ``default y if PM``).
+* :kconfig:option:`CONFIG_MCUX_LPTMR_TIMER` now defaults to ``y`` when the
+  ``/chosen/zephyr,system-timer`` chosen node is enabled and compatible with
+  :dtcompatible:`nxp,lptmr`. Boards that do not use LPTMR as the system timer
+  must not select an LPTMR node in ``/chosen/zephyr,system-timer``.
 
 * Kinetis KE1xF no longer requires a board overlay to designate the system
   timer when :kconfig:option:`CONFIG_PM` is enabled. The SoC DTSI now sets the
@@ -394,6 +457,14 @@ STM32
   ``pinctrl-names``, ``mclk-enable``, ``mclk-divider``, ``synchronous``, and
   ``fifo-threshold``. (:github:`104423`)
 
+* :dtcompatible:`st,hci-stm32wba` and :dtcompatible:`st,stm32wba-ieee802154` nodes
+  (with nodelabels ``bt_hci_wba`` and ``ieee802154`` respectively) are now
+  children of a top-level :dtcompatible:`st,stm32wba-radio` node with nodelabel
+  ``radio``. The ``interrupts`` property is now set on the ``&radio`` node instead
+  of being duplicated on both ``&bt_hci_wba`` and ``&ieee802154`` nodes. Out-of-tree
+  boards which modified the ``interrupts`` property on either node must be updated
+  to set the property on the top-level ``&radio`` node instead. (:github:`110546`)
+
 Syscon
 ======
 
@@ -409,6 +480,11 @@ USB
   from :samp:`usbotg_hs{N}` to :samp:`usbphyc{N}` nodes at SoC DTSI level. Boards which
   use an STM32N6 SoC with custom clock mux configuration must now set the ``clocks``
   property on :samp:`usbphyc{N}` instead of :samp:`usbotg_hs{N}`. (:github:`107813`)
+* When host issues control transfer with data stage from host to device, the USB control transfer
+  callbacks ``control_to_dev`` in :c:struct:`usbd_class_api` and ``to_dev`` in
+  :c:struct:`usbd_vreq_node` are now called with NULL ``buf`` before data stage is received.
+  This allows the stack to return STALL during data stage. Out-of-tree class and vendor handlers
+  need to be updated. (:github:`108840`)
 
 WiFi
 ====
@@ -580,6 +656,9 @@ Networking
   been removed. TF-PSA-Crypto cannot decrypt their DES-encrypted PKCS#8 private
   keys. Use ``samples/net/wifi/test_certs/rsa2k_no_des`` instead, or set
   :envvar:`WIFI_TEST_CERTS_DIR` to another AES-encrypted certificate directory.
+
+* ``net_if_config_get`` was removed as it was a duplicate of :c:func:`net_if_get_config`.
+  (:github:`110930`)
 
 
 Ethernet

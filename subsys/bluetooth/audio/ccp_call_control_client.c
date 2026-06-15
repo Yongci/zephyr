@@ -115,8 +115,7 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 
 	/* client->conn may be NULL */
 	if (client->conn == conn) {
-		bt_conn_unref(client->conn);
-		client->conn = NULL;
+		bt_conn_drop(&client->conn);
 
 		memset(client->bearers, 0, sizeof(client->bearers));
 	}
@@ -130,7 +129,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 static void populate_bearers(struct bt_ccp_call_control_client *client,
 			     struct bt_ccp_call_control_client_bearers *bearers)
 {
-	size_t i = 0;
+	size_t i = 0U;
 
 #if defined(CONFIG_BT_TBS_CLIENT_GTBS)
 	if (client->bearers[i].discovered) {
