@@ -507,7 +507,11 @@ int i2c_stm32_target_register(const struct device *dev,
 	}
 
 	/* Mark device as active */
-	(void)pm_device_runtime_get(dev);
+	ret = pm_device_runtime_get(dev);
+	if (ret < 0) {
+		LOG_ERR("i2c: PM runtime failure: %d", ret);
+		return ret;
+	}
 
 #if !defined(CONFIG_SOC_SERIES_STM32F7X)
 	if (pm_device_wakeup_is_capable(dev)) {
@@ -533,11 +537,13 @@ int i2c_stm32_target_register(const struct device *dev,
 
 		LOG_DBG("i2c: target #1 registered");
 	} else {
-		data->target2_cfg = config;
-
-		if (data->target2_cfg->flags == I2C_TARGET_FLAGS_ADDR_10_BITS) {
+		if (config->flags == I2C_TARGET_FLAGS_ADDR_10_BITS) {
+			(void)pm_device_runtime_put(dev);
 			return -EINVAL;
 		}
+
+		data->target2_cfg = config;
+
 		LL_I2C_SetOwnAddress2(i2c, config->address << 1U,
 				      LL_I2C_OWNADDRESS2_NOMASK);
 		LL_I2C_EnableOwnAddress2(i2c);
@@ -582,6 +588,7 @@ int i2c_stm32_target_unregister(const struct device *dev,
 
 	/* Return if there is a target remaining */
 	if (data->target_cfg || data->target2_cfg) {
+		(void)pm_device_runtime_put(dev);
 		LOG_DBG("i2c: target#%c still registered", data->target_cfg?'1':'2');
 		return 0;
 	}
