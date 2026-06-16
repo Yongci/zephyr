@@ -168,6 +168,26 @@
 	};
 };
 
+&adc0 {
+    status = "okay";
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+    /*
+	 * ADC1_CH2 (GPIO2)
+	 *
+	 * Battery voltage read
+	 */
+    channel@2 {
+        reg = <2>;
+        zephyr,gain = "ADC_GAIN_1_4";
+        zephyr,reference = "ADC_REF_INTERNAL";
+        zephyr,vref-mv = <3894>;
+        zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+        zephyr,resolution = <12>;
+    };
+};
+
 &wdt0 {
 	status = "okay";
 };
