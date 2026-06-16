@@ -60,6 +60,30 @@
 	clock-frequency = <I2C_BITRATE_FAST>;
 	pinctrl-0 = <&i2c0_default>;
 	pinctrl-names = "default";
+
+	ch224q: usbc-controller@37 {
+        compatible = "wch,ch224q";
+        reg = <0x37>;
+        mode = "i2c";
+        voltage-request = <20000>;
+        int-gpios = <&gpio0 23 GPIO_ACTIVE_LOW>;
+        pg-gpios = <&gpio0 22 GPIO_ACTIVE_LOW>;   /* PG pin - active low */
+    };
+
+	/*
+	htu21d: {
+
+	};
+
+	bmp180: {
+
+	};
+
+	bh1750: {
+
+	};
+
+	*/
 };
 
 &i2s {
@@ -85,6 +109,12 @@
 &gpio0 {
 	status = "okay";
 
+	/*
+	 * TPS56A37 pins
+	 *
+	 * buck_en output HIGH: enable buck;
+	 * buck_pg read input LOW: power good
+	 */ 
 	buck_en {
 		gpio-hog;
 	    gpios = <19 GPIO_ACTIVE_HIGH>;
@@ -94,23 +124,47 @@
 
 	buck_pg {
 		gpio-hog;
-		gpios = <18 GPIO_ACTIVE_HIGH>;
+		gpios = <18 GPIO_ACTIVE_LOW>;
 		input;
 		line-name = "buck_pg";
 	};
 
-	/* CH9442Q SEL pin */
+	/* 
+	 * CH9442Q SEL pins
+	 *
+	 * SEL==0&&EN==0: select ch224q(default);
+	 * SEL==1&&EN==0: select esp32c6-mini-1u;
+	 * EN!=0: USB dissconnected 
+	 */
 	usb_mux_sel {
 		gpio-hog;
 		gpios = <20 GPIO_ACTIVE_HIGH>;
 		output-high;
 		line-name = "usb_mux_sel";
 	};
-
 	usb_mux_en {
 		gpio-hog;
 		gpios = <21 GPIO_ACTIVE_LOW>;
 		line-name = "usb_mux_en";
+	};
+
+	/*
+	 * Relay
+	 * 
+	 * relay_a: K1, relay_b: K2
+	 * NPN
+	 */
+	relay_a {
+		gpio-hog;
+		gpios = <14 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "relay_a";
+	};
+	relay_b {
+		gpio-hog;
+		gpios = <15 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "relay_b";
 	};
 };
 
