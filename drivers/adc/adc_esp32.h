@@ -15,6 +15,10 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/drivers/clock_control.h>
 
+#ifndef SOC_ADC_MAX_CHANNEL_NUM
+#define SOC_ADC_MAX_CHANNEL_NUM SOC_ADC_CHANNEL_NUM(0)
+#endif
+
 struct adc_esp32_conf {
 	const struct device *clock_dev;
 	const clock_control_subsys_t clock_subsys;

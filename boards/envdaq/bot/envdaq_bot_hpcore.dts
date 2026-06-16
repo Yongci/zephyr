@@ -30,7 +30,12 @@
 		i2c-0 = &i2c0;
 		sw0 = &button0;
 		rgb0 = &rgb_led;
+		/* only example use this node */
 		led-strip = &rgb_led;
+
+
+		relay-a = &relay_a;
+		relay-b = &relay_b;
 	};
 
 	buttons {
@@ -42,6 +47,26 @@
 			zephyr,code = <INPUT_KEY_0>;
 		};
 	};
+
+	/*
+	 * Relays
+	 * 
+	 * relay_a: K1, relay_b: K2
+	 * NPN
+	 */
+	relays {
+        compatible = "gpio-leds";
+        
+        relay_a: relay_a {
+            gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+            label = "Relay A";
+        };
+        
+        relay_b: relay_b {
+            gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+            label = "Relay B";
+        };
+    };
 };
 
 &uart0 {
@@ -146,25 +171,6 @@
 		gpio-hog;
 		gpios = <21 GPIO_ACTIVE_LOW>;
 		line-name = "usb_mux_en";
-	};
-
-	/*
-	 * Relay
-	 * 
-	 * relay_a: K1, relay_b: K2
-	 * NPN
-	 */
-	relay_a {
-		gpio-hog;
-		gpios = <14 GPIO_ACTIVE_HIGH>;
-		output-low;
-		line-name = "relay_a";
-	};
-	relay_b {
-		gpio-hog;
-		gpios = <15 GPIO_ACTIVE_HIGH>;
-		output-low;
-		line-name = "relay_b";
 	};
 };
 
