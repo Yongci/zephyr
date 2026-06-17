@@ -34,17 +34,17 @@ static const struct device *adc_dev = DEVICE_DT_GET(ADC_DEVICE_NODE);
 #define ADC_GAIN_SETTING ADC_GAIN_1_4
 #define ADC_RESOLUTION 12
 
-/* ADC 采样次数（过采样） */
+/* ADC sample count for oversampling */
 #define ADC_SAMPLE_COUNT 16
 
 /* ============================================================
- * 两点线性校准（微调版）
+ * Two-Point Linear Calibration (Fine-Tuned)
  * 
- * 用万用表实测数据：
- *   点1: ADC = 1.62V, 电池 = 9.99V
- *   点2: ADC = 1.72V, 电池 = 12.715V (更新)
+ * Measured with a multimeter:
+ *   Point 1: ADC = 1.62V, Battery = 9.99V
+ *   Point 2: ADC = 1.72V, Battery = 12.715V (updated)
  * 
- * 公式: V_battery = slope * V_adc + offset
+ * Formula: V_battery = slope * V_adc + offset
  *       slope = (12.715 - 9.99) / (1.72 - 1.62) = 27.25
  *       offset = 9.99 - 27.25 * 1.62 = -34.155
  * ============================================================ */
@@ -88,7 +88,7 @@ static int read_battery_voltage(int32_t *voltage_mv, int32_t *adc_input_mv)
 		return ret;
 	}
 
-	/* 多次采样取平均，消除噪声 */
+	/* multiple samples for oversampling to improve stability */
 	for (int i = 0; i < num_samples; i++) {
 		struct adc_sequence sequence = {
 			.channels = BIT(ADC_CHANNEL_ID),
