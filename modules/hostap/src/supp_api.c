@@ -93,7 +93,11 @@ static K_WORK_DELAYABLE_DEFINE(wpa_supp_status_work,
 	({                                                                                         \
 		bool status;                                                                       \
                                                                                                    \
-		if (zephyr_wpa_cli_cmd_v(wpa_s->ctrl_conn, cmd, ##__VA_ARGS__) < 0) {              \
+		if (wpa_s->ctrl_conn == NULL) {                                                    \
+			wpa_printf(MSG_ERROR,                                                      \
+				   "Control interface not ready, dropping command: %s", cmd);      \
+			status = false;                                                            \
+		} else if (zephyr_wpa_cli_cmd_v(wpa_s->ctrl_conn, cmd, ##__VA_ARGS__) < 0) {       \
 			wpa_printf(MSG_ERROR, "Failed to execute wpa_cli command: %s", cmd);       \
 			status = false;                                                            \
 		} else {                                                                           \
@@ -640,6 +644,60 @@ static void wpas_remove_certs(struct wpa_supplicant *wpa_s)
 }
 #endif
 
+static void pbkdf2_string_format(const uint8_t *psk, char output[WIFI_PSK_MAX_LEN + 1])
+{
+	uint8_t rem_len = WIFI_PSK_MAX_LEN + 1;
+
+	/* Chunk the formatting into 4 byte groups to reduce overhead */
+	for (int i = 0; i < WIFI_PSK_PBKDF2_KEY_LEN; i += 4) {
+		snprintf(output + (2 * i), rem_len, "%02x%02x%02x%02x", psk[i + 0], psk[i + 1],
+			 psk[i + 2], psk[i + 3]);
+		rem_len -= 8;
+	}
+}
+
+static int psk_validate(struct wifi_connect_req_params *params,
+			uint8_t output[WIFI_PSK_MAX_LEN + 1])
+{
+	if (params->psk == NULL ||
+	    params->security == WIFI_SECURITY_TYPE_WEP ||
+	    params->security == WIFI_SECURITY_TYPE_WEP_OPEN ||
+	    params->security == WIFI_SECURITY_TYPE_WEP_SHARED) {
+		/* No PSK or length validation not required */
+		return 0;
+	}
+
+	if (params->psk_is_pbkdf2) {
+		if ((params->security != WIFI_SECURITY_TYPE_PSK) &&
+		    (params->security != WIFI_SECURITY_TYPE_PSK_SHA256) &&
+		    (params->security != WIFI_SECURITY_TYPE_WPA_PSK) &&
+		    (params->security != WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL)) {
+			wpa_printf(MSG_ERROR,
+				   "PBKDF2 not supported for mode %d", params->security);
+			return -EINVAL;
+		}
+		if (params->psk_length != WIFI_PSK_PBKDF2_KEY_LEN) {
+			wpa_printf(MSG_ERROR,
+				   "PBKDF2 key must be %d bytes",
+				   WIFI_PSK_PBKDF2_KEY_LEN);
+			return -EINVAL;
+		}
+		/* Convert byte array to hex string */
+		pbkdf2_string_format(params->psk, output);
+	} else {
+		if ((params->psk_length < WIFI_PSK_MIN_LEN) ||
+			(params->psk_length > WIFI_PSK_MAX_LEN)) {
+			wpa_printf(MSG_ERROR,
+					"Passphrase should be in range (%d-%d) characters",
+					WIFI_PSK_MIN_LEN, WIFI_PSK_MAX_LEN);
+			return -EINVAL;
+		}
+		strncpy(output, params->psk, WIFI_PSK_MAX_LEN);
+		output[params->psk_length] = '\0';
+	}
+	return 0;
+}
+
 static int wpas_add_and_config_network(struct wpa_supplicant *wpa_s,
 				       struct wifi_connect_req_params *params,
 				       bool mode_ap)
@@ -662,7 +720,17 @@ static int wpas_add_and_config_network(struct wpa_supplicant *wpa_s,
 	wpas_remove_certs(wpa_s);
 #endif
 
+	/* Enforce NULL terminated PSK in all code paths */
+	psk_null_terminated[0] = '\0';
+
+	if (wpa_s->ctrl_conn == NULL) {
+		wpa_printf(MSG_ERROR, "Control interface not ready");
+		ret = -EAGAIN;
+		goto out;
+	}
+
 	if (!wpa_cli_cmd_v("remove_network all")) {
+		ret = -EINVAL;
 		goto out;
 	}
 
@@ -730,19 +798,9 @@ static int wpas_add_and_config_network(struct wpa_supplicant *wpa_s,
 	}
 
 	if (params->security != WIFI_SECURITY_TYPE_NONE) {
-		if (params->psk &&
-		    params->security != WIFI_SECURITY_TYPE_WEP &&
-		    params->security != WIFI_SECURITY_TYPE_WEP_OPEN &&
-		    params->security != WIFI_SECURITY_TYPE_WEP_SHARED) {
-			if ((params->psk_length < WIFI_PSK_MIN_LEN) ||
-			    (params->psk_length > WIFI_PSK_MAX_LEN)) {
-				wpa_printf(MSG_ERROR,
-					   "Passphrase should be in range (%d-%d) characters",
-					   WIFI_PSK_MIN_LEN, WIFI_PSK_MAX_LEN);
-				goto out;
-			}
-			strncpy(psk_null_terminated, params->psk, WIFI_PSK_MAX_LEN);
-			psk_null_terminated[params->psk_length] = '\0';
+		/* PSK validation */
+		if (psk_validate(params, psk_null_terminated) < 0) {
+			goto out;
 		}
 
 		/* SAP - only open and WPA2-PSK are supported for now */
@@ -763,6 +821,11 @@ static int wpas_add_and_config_network(struct wpa_supplicant *wpa_s,
 				goto out;
 			}
 		}
+
+		/* Pre-computed key has no quotes */
+		const char *psk_format = params->psk_is_pbkdf2 ?
+			"set_network %d psk %s" :
+			"set_network %d psk \"%s\"";
 
 		if (IS_ENABLED(CONFIG_WIFI_NM_WPA_SUPPLICANT_WPA3_COMMON) &&
 		    (params->security == WIFI_SECURITY_TYPE_SAE_HNP ||
@@ -845,8 +908,7 @@ static int wpas_add_and_config_network(struct wpa_supplicant *wpa_s,
 		}
 #endif
 		else if (params->security == WIFI_SECURITY_TYPE_PSK_SHA256) {
-			if (!wpa_cli_cmd_v("set_network %d psk \"%s\"",
-					   resp.network_id, psk_null_terminated)) {
+			if (!wpa_cli_cmd_v(psk_format, resp.network_id, psk_null_terminated)) {
 				goto out;
 			}
 
@@ -864,8 +926,7 @@ static int wpas_add_and_config_network(struct wpa_supplicant *wpa_s,
 			}
 		} else if (params->security == WIFI_SECURITY_TYPE_PSK ||
 			   params->security == WIFI_SECURITY_TYPE_WPA_PSK) {
-			if (!wpa_cli_cmd_v("set_network %d psk \"%s\"",
-					   resp.network_id, psk_null_terminated)) {
+			if (!wpa_cli_cmd_v(psk_format, resp.network_id, psk_null_terminated)) {
 				goto out;
 			}
 
@@ -889,8 +950,7 @@ static int wpas_add_and_config_network(struct wpa_supplicant *wpa_s,
 				goto out;
 			}
 		} else if (params->security == WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL) {
-			if (!wpa_cli_cmd_v("set_network %d psk \"%s\"", resp.network_id,
-					   psk_null_terminated)) {
+			if (!wpa_cli_cmd_v(psk_format, resp.network_id, psk_null_terminated)) {
 				goto out;
 			}
 
@@ -1402,6 +1462,13 @@ int supplicant_connect(const struct device *dev __unused, struct net_if *iface,
 		goto out;
 	}
 
+	if (wpa_s->ctrl_conn == NULL) {
+		wpa_printf(MSG_ERROR,
+			   "Control interface not ready, supplicant still initializing");
+		ret = -EAGAIN;
+		goto out;
+	}
+
 	/* Allow connect in STA mode only even if we are connected already */
 	if  (wpa_s->current_ssid && wpa_s->current_ssid->mode != WPAS_MODE_INFRA) {
 		ret = -EBUSY;
@@ -1486,6 +1553,12 @@ int supplicant_status(const struct device *dev __unused, struct net_if *iface,
 
 	wpa_s = get_wpa_s_handle(iface);
 	if (!wpa_s) {
+		goto out;
+	}
+
+	if (wpa_s->ctrl_conn == NULL) {
+		wpa_printf(MSG_ERROR, "Control interface not ready");
+		ret = -EAGAIN;
 		goto out;
 	}
 
@@ -1732,7 +1805,7 @@ int supplicant_11k_neighbor_request(const struct device *dev, struct net_if *ifa
 	if (wpa_s->reassociate || (wpa_s->wpa_state >= WPA_AUTHENTICATING &&
 	    wpa_s->wpa_state < WPA_COMPLETED)) {
 		wpa_printf(MSG_INFO, "Reassociation is in progress, skip");
-		return 0;
+		return -EALREADY;
 	}
 
 	if (params) {
@@ -1803,38 +1876,6 @@ int supplicant_candidate_scan(const struct device *dev __unused, struct net_if *
 	}
 
 	return 0;
-}
-
-int supplicant_11r_roaming(const struct device *dev __unused, struct net_if *iface)
-{
-	struct wpa_supplicant *wpa_s;
-	int ret = 0;
-
-	k_mutex_lock(&wpa_supplicant_mutex, K_FOREVER);
-
-	wpa_s = get_wpa_s_handle(iface);
-	if (!wpa_s) {
-		ret = -1;
-		goto out;
-	}
-
-	if (wpa_s->reassociate || (wpa_s->wpa_state >= WPA_AUTHENTICATING &&
-	    wpa_s->wpa_state < WPA_COMPLETED)) {
-		wpa_printf(MSG_INFO, "Reassociation is in progress, skip");
-		ret = 0;
-		goto out;
-	}
-
-	if (!wpa_cli_cmd_v("reassociate")) {
-		wpa_printf(MSG_ERROR, "%s: cli cmd <reassociate> fail",
-			   __func__);
-		ret = -1;
-		goto out;
-	}
-
-out:
-	k_mutex_unlock(&wpa_supplicant_mutex);
-	return ret;
 }
 #endif
 
@@ -2062,7 +2103,7 @@ int supplicant_legacy_roam(const struct device *dev __unused, struct net_if *ifa
 	if (wpa_s->reassociate || (wpa_s->wpa_state >= WPA_AUTHENTICATING &&
 	    wpa_s->wpa_state < WPA_COMPLETED)) {
 		wpa_printf(MSG_INFO, "Reassociation is in progress, skip");
-		ret = 0;
+		ret = -EALREADY;
 		goto out;
 	}
 
@@ -2173,7 +2214,7 @@ int supplicant_btm_query(const struct device *dev __unused, struct net_if *iface
 	if (wpa_s->reassociate || (wpa_s->wpa_state >= WPA_AUTHENTICATING &&
 	    wpa_s->wpa_state < WPA_COMPLETED)) {
 		wpa_printf(MSG_INFO, "Reassociation is in progress, skip");
-		ret = 0;
+		ret = -EALREADY;
 		goto out;
 	}
 

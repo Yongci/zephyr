@@ -684,6 +684,12 @@ struct wifi_connect_req_params {
 	const uint8_t *psk;
 	/** Pre-shared key length */
 	uint8_t psk_length; /* Min 8 - Max 64 */
+	/**
+	 * Pre-shared key is the pre-computed PBKDF2 output.
+	 * `psk_length` MUST be 32 bytes.
+	 * Only applicable for PSK based security types.
+	 */
+	bool psk_is_pbkdf2;
 	/** SAE password (same as PSK but with no length restrictions), optional */
 	const uint8_t *sae_password;
 	/** SAE password length */
@@ -2291,9 +2297,11 @@ struct wifi_mgmt_ops {
 	 * @param dev Pointer to the device structure for the driver instance
 	 * @param iface Network interface to use for the roaming operation
 	 *
+	 * @deprecated Controlled by connection request params
+	 *
 	 * @return 0 if ok, < 0 if error
 	 */
-	int (*start_11r_roaming)(const struct device *dev, struct net_if *iface);
+	__deprecated int (*start_11r_roaming)(const struct device *dev, struct net_if *iface);
 	/** Set BSS max idle period
 	 *
 	 * @param dev Pointer to the device structure for the driver instance.
