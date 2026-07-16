@@ -46,6 +46,7 @@ LOG_MODULE_REGISTER(net_core, CONFIG_NET_CORE_LOG_LEVEL);
 #include "net_private.h"
 #include "shell/net_shell.h"
 
+#include "dplpmtud_internal.h"
 #include "pmtu.h"
 
 #include "icmpv6.h"
@@ -74,8 +75,6 @@ LOG_MODULE_REGISTER(net_core, CONFIG_NET_CORE_LOG_LEVEL);
 #if defined(CONFIG_NET_NATIVE)
 static inline enum net_verdict process_data(struct net_pkt *pkt)
 {
-	int ret;
-
 	net_packet_socket_input(pkt, ETH_P_ALL, NET_SOCK_RAW);
 
 	/* If there is no data, then drop the packet. */
@@ -87,15 +86,17 @@ static inline enum net_verdict process_data(struct net_pkt *pkt)
 	}
 
 	if (!net_pkt_is_l2_processed(pkt)) {
-		ret = net_if_recv_data(net_pkt_iface(pkt), pkt);
-		if (ret != NET_CONTINUE) {
-			if (ret == NET_DROP) {
+		enum net_verdict verdict;
+
+		verdict = net_if_recv_data(net_pkt_iface(pkt), pkt);
+		if (verdict != NET_CONTINUE) {
+			if (verdict == NET_DROP) {
 				NET_DBG("Packet %p discarded by L2", pkt);
 				net_stats_update_processing_error(
 							net_pkt_iface(pkt));
 			}
 
-			return ret;
+			return verdict;
 		}
 	}
 
@@ -357,9 +358,8 @@ static inline bool process_multicast(struct net_pkt *pkt)
 
 #if defined(CONFIG_NET_IPV4)
 	if (family == NET_AF_INET) {
-		const struct net_in_addr *dst = (const struct net_in_addr *)&NET_IPV4_HDR(pkt)->dst;
-
-		return net_ipv4_is_addr_mcast(dst) && net_context_get_ipv4_mcast_loop(ctx);
+		return net_ipv4_is_addr_mcast_raw(NET_IPV4_HDR(pkt)->dst) &&
+		       net_context_get_ipv4_mcast_loop(ctx);
 	}
 #endif
 #if defined(CONFIG_NET_IPV6)
@@ -614,6 +614,7 @@ err:
 static inline void l3_init(void)
 {
 	net_pmtu_init();
+	net_dplpmtud_init();
 	net_icmpv4_init();
 	net_icmpv6_init();
 	net_ipv4_init();

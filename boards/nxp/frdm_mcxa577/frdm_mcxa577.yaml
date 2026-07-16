@@ -20,6 +20,7 @@ supported:
   - counter
   - adc
   - i2c
+  - i3c
   - spi
   - dma
   - watchdog
@@ -28,4 +29,5 @@ supported:
   - edac
   - can
   - dac
+  - rtc
 vendor: nxp

@@ -190,6 +190,12 @@ extern "C" {
 /** Socket option to control TLS session caching on a socket. Accepted values:
  *  - 0 - Disabled.
  *  - 1 - Enabled.
+ *
+ *  For TLS 1.3, sessions are cached when a NewSessionTicket message is
+ *  received, which happens after the handshake completes. The application
+ *  needs to receive from or poll the socket for the ticket to be processed
+ *  and cached. The latest received ticket replaces the cache entry for the
+ *  peer.
  */
 #define ZSOCK_TLS_SESSION_CACHE 12
 /** Write-only socket option to purge session cache immediately.
@@ -929,7 +935,7 @@ int zsock_sendmsg_all(int sock, const struct net_msghdr *msg, int flags,
 #define ZSOCK_SO_OOBINLINE 10
 /** Socket priority */
 #define ZSOCK_SO_PRIORITY 12
-/** Socket lingers on close (ignored, for compatibility) */
+/** Socket lingers on close. Takes a struct net_linger as argument. */
 #define ZSOCK_SO_LINGER 13
 /** Allow multiple sockets to reuse a single port */
 #define ZSOCK_SO_REUSEPORT 15
@@ -1029,7 +1035,7 @@ int zsock_sendmsg_all(int sock, const struct net_msghdr *msg, int flags,
  */
 #define ZSOCK_IP_MTU 14
 
-/** Disable local IPv4 fragmentation for packets sent on this socket.
+/** Disable local IPv4 fragmentation for this socket.
  *
  *  Takes an integer boolean (0 = allow fragmentation, non-zero = disable).
  *  When enabled, datagrams larger than the interface MTU are rejected locally
@@ -1038,6 +1044,9 @@ int zsock_sendmsg_all(int sock, const struct net_msghdr *msg, int flags,
  *
  *  Valid for ``setsockopt()`` and ``getsockopt()`` at the ``NET_IPPROTO_IP``
  *  level.
+ *
+ *  This option may also be passed as ancillary data in sendmsg() to override
+ *  fragmentation handling for a single datagram.
  */
 #define ZSOCK_IP_DONTFRAG 15
 
@@ -1094,7 +1103,7 @@ int zsock_sendmsg_all(int sock, const struct net_msghdr *msg, int flags,
  */
 #define ZSOCK_IPV6_MTU 24
 
-/** Disable local IPv6 fragmentation for packets sent on this socket.
+/** Disable local IPv6 fragmentation for this socket.
  *
  *  Takes an integer boolean (0 = allow fragmentation, non-zero = disable).
  *  When enabled, datagrams larger than the interface MTU are rejected locally
@@ -1102,6 +1111,9 @@ int zsock_sendmsg_all(int sock, const struct net_msghdr *msg, int flags,
  *
  *  Valid for ``setsockopt()`` and ``getsockopt()`` at the ``NET_IPPROTO_IPV6``
  *  level.
+ *
+ *  This option may also be passed as ancillary data in sendmsg() to override
+ *  fragmentation handling for a single datagram.
  */
 #define ZSOCK_IPV6_DONTFRAG 62
 

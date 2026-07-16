@@ -636,6 +636,10 @@ int net_context_get(net_sa_family_t family, enum net_sock_type type, uint16_t pr
 			k_sem_init(&contexts[i].recv_data_wait, 1, K_SEM_MAX_LIMIT);
 		}
 
+#if defined(CONFIG_NET_CONTEXT_LINGER)
+		k_sem_init(&contexts[i].linger_sem, 0, 1);
+#endif
+
 		k_mutex_init(&contexts[i].lock);
 
 		contexts[i].flags |= NET_CONTEXT_IN_USE;
@@ -716,6 +720,9 @@ int net_context_unref(struct net_context *context)
 int net_context_put(struct net_context *context)
 {
 	int ret = 0;
+#if defined(CONFIG_NET_CONTEXT_LINGER)
+	bool linger = false;
+#endif
 
 	NET_ASSERT(context);
 
@@ -733,6 +740,17 @@ int net_context_put(struct net_context *context)
 		return ret;
 	}
 
+#if defined(CONFIG_NET_CONTEXT_LINGER)
+	/* SO_LINGER with a non-zero timeout: block until the connection has
+	 * been closed by the stack or the timeout expires. The linger_sem is
+	 * signalled from tcp_conn_close() via net_context_signal_linger().
+	 */
+	linger = context->options.linger.l_onoff != 0 &&
+		 context->options.linger.l_linger > 0 &&
+		 net_context_get_type(context) == NET_SOCK_STREAM &&
+		 net_context_get_state(context) == NET_CONTEXT_CONNECTED;
+#endif /* CONFIG_NET_CONTEXT_LINGER */
+
 	context->connect_cb = NULL;
 	context->recv_cb = NULL;
 	context->send_cb = NULL;
@@ -741,6 +759,13 @@ int net_context_put(struct net_context *context)
 	net_tcp_put(context, false);
 
 	k_mutex_unlock(&context->lock);
+
+#if defined(CONFIG_NET_CONTEXT_LINGER)
+	if (linger) {
+		(void)k_sem_take(&context->linger_sem,
+				 K_SECONDS(context->options.linger.l_linger));
+	}
+#endif /* CONFIG_NET_CONTEXT_LINGER */
 
 	/* Decrement refcount on user app's behalf */
 	net_context_unref(context);
@@ -1268,11 +1293,11 @@ int net_context_listen(struct net_context *context, int backlog)
 	return -EOPNOTSUPP;
 }
 
-#if defined(CONFIG_NET_IPV4)
-int net_context_create_ipv4_new(struct net_context *context,
-				struct net_pkt *pkt,
-				const struct net_in_addr *src,
-				const struct net_in_addr *dst)
+static int context_create_ipv4_new(struct net_context *context,
+				   struct net_pkt *pkt,
+				   const struct net_in_addr *src,
+				   const struct net_in_addr *dst,
+				   bool dont_fragment)
 {
 	if (!src) {
 		NET_ASSERT(((
@@ -1318,17 +1343,16 @@ int net_context_create_ipv4_new(struct net_context *context,
 		}
 	}
 
-	net_pkt_set_dont_fragment(pkt, context->options.dont_fragment);
+	net_pkt_set_dont_fragment(pkt, dont_fragment);
 
 	return net_ipv4_create(pkt, src, dst);
 }
-#endif /* CONFIG_NET_IPV4 */
 
-#if defined(CONFIG_NET_IPV6)
-int net_context_create_ipv6_new(struct net_context *context,
-				struct net_pkt *pkt,
-				const struct net_in6_addr *src,
-				const struct net_in6_addr *dst)
+static int context_create_ipv6_new(struct net_context *context,
+				   struct net_pkt *pkt,
+				   const struct net_in6_addr *src,
+				   const struct net_in6_addr *dst,
+				   bool dont_fragment)
 {
 	if (!src) {
 		NET_ASSERT(((
@@ -1340,7 +1364,10 @@ int net_context_create_ipv6_new(struct net_context *context,
 	if (net_ipv6_is_addr_unspecified(src) || net_ipv6_is_addr_mcast(src)) {
 		src = net_if_ipv6_select_src_addr_hint(net_pkt_iface(pkt),
 						       (struct net_in6_addr *)dst,
-						       context->options.addr_preferences);
+						       COND_CODE_1(
+							       CONFIG_NET_IPV6,
+							       (context->options.addr_preferences),
+							       (0)));
 	}
 
 #if defined(CONFIG_NET_CONTEXT_DSCP_ECN)
@@ -1353,9 +1380,30 @@ int net_context_create_ipv6_new(struct net_context *context,
 	}
 #endif
 
-	net_pkt_set_dont_fragment(pkt, context->options.dont_fragment);
+	net_pkt_set_dont_fragment(pkt, dont_fragment);
 
 	return net_ipv6_create(pkt, src, dst);
+}
+
+#if defined(CONFIG_NET_IPV4)
+int net_context_create_ipv4_new(struct net_context *context,
+				struct net_pkt *pkt,
+				const struct net_in_addr *src,
+				const struct net_in_addr *dst)
+{
+	return context_create_ipv4_new(context, pkt, src, dst,
+				       context->options.dont_fragment);
+}
+#endif /* CONFIG_NET_IPV4 */
+
+#if defined(CONFIG_NET_IPV6)
+int net_context_create_ipv6_new(struct net_context *context,
+				struct net_pkt *pkt,
+				const struct net_in6_addr *src,
+				const struct net_in6_addr *dst)
+{
+	return context_create_ipv6_new(context, pkt, src, dst,
+				       context->options.dont_fragment);
 }
 #endif /* CONFIG_NET_IPV6 */
 
@@ -1780,6 +1828,37 @@ static int get_context_sndbuf(struct net_context *context,
 #endif
 }
 
+static int get_context_linger(struct net_context *context,
+			      void *value, uint32_t *len)
+{
+#if defined(CONFIG_NET_CONTEXT_LINGER)
+	struct net_linger *linger = value;
+
+	/* SO_LINGER is only meaningful for connection-oriented (stream)
+	 * sockets.
+	 */
+	if (net_context_get_type(context) != NET_SOCK_STREAM) {
+		return -ENOTSUP;
+	}
+
+	if (value == NULL || len == NULL || *len != sizeof(struct net_linger)) {
+		return -EINVAL;
+	}
+
+	*linger = context->options.linger;
+
+	*len = sizeof(struct net_linger);
+
+	return 0;
+#else
+	ARG_UNUSED(context);
+	ARG_UNUSED(value);
+	ARG_UNUSED(len);
+
+	return -ENOTSUP;
+#endif /* CONFIG_NET_CONTEXT_LINGER */
+}
+
 static int get_context_dscp_ecn(struct net_context *context,
 				void *value, uint32_t *len)
 {
@@ -2185,7 +2264,8 @@ static int context_setup_udp_packet(struct net_context *context,
 				    size_t len,
 				    const struct net_msghdr *msg,
 				    const struct net_sockaddr *dst_addr,
-				    net_socklen_t addrlen)
+				    net_socklen_t addrlen,
+				    bool dont_fragment)
 {
 	int ret = -EINVAL;
 	uint16_t dst_port = 0U;
@@ -2195,15 +2275,15 @@ static int context_setup_udp_packet(struct net_context *context,
 
 		dst_port = addr6->sin6_port;
 
-		ret = net_context_create_ipv6_new(context, pkt,
-						  NULL, &addr6->sin6_addr);
+		ret = context_create_ipv6_new(context, pkt, NULL,
+					      &addr6->sin6_addr, dont_fragment);
 	} else if (IS_ENABLED(CONFIG_NET_IPV4) && family == NET_AF_INET) {
 		struct net_sockaddr_in *addr4 = (struct net_sockaddr_in *)dst_addr;
 
 		dst_port = addr4->sin_port;
 
-		ret = net_context_create_ipv4_new(context, pkt,
-						  NULL, &addr4->sin_addr);
+		ret = context_create_ipv4_new(context, pkt, NULL,
+					      &addr4->sin_addr, dont_fragment);
 	}
 
 	if (ret < 0) {
@@ -2215,9 +2295,7 @@ static int context_setup_udp_packet(struct net_context *context,
 		return ret;
 	}
 
-#if defined(CONFIG_NET_IPV6) || defined(CONFIG_NET_IPV4)
-	net_pkt_set_dont_fragment(pkt, context->options.dont_fragment);
-#endif
+	net_pkt_set_dont_fragment(pkt, dont_fragment);
 
 	ret = net_udp_create(pkt,
 			     net_sin((struct net_sockaddr *)
@@ -2438,6 +2516,54 @@ static void set_pkt_hoplimit(struct net_pkt *pkt, const struct net_msghdr *msg_h
 	}
 }
 
+static bool get_pkt_dont_fragment(struct net_context *context,
+				  net_sa_family_t family,
+				  const struct net_msghdr *msg_hdr)
+{
+	struct net_cmsghdr *cmsg;
+	const struct net_sockaddr_in6 *addr6 = NULL;
+	bool dont_fragment = COND_CASE_1(CONFIG_NET_IPV4, (context->options.dont_fragment),
+					 CONFIG_NET_IPV6, (context->options.dont_fragment),
+					 (false));
+
+	if (msg_hdr == NULL) {
+		return dont_fragment;
+	}
+
+	if (IS_ENABLED(CONFIG_NET_IPV4_MAPPING_TO_IPV6) && IS_ENABLED(CONFIG_NET_IPV6)) {
+		addr6 = msg_hdr->msg_name;
+	}
+
+	for (cmsg = NET_CMSG_FIRSTHDR(msg_hdr); cmsg != NULL;
+	     cmsg = NET_CMSG_NXTHDR(msg_hdr, cmsg)) {
+		if (family == NET_AF_INET6) {
+			if (cmsg->cmsg_len == NET_CMSG_LEN(sizeof(int)) &&
+			    cmsg->cmsg_level == NET_IPPROTO_IPV6 &&
+			    cmsg->cmsg_type == ZSOCK_IPV6_DONTFRAG) {
+				dont_fragment = *(int *)NET_CMSG_DATA(cmsg) != 0;
+				break;
+			}
+		} else if (family == NET_AF_INET) {
+			if (addr6 == NULL ||
+			    !net_ipv6_addr_is_v4_mapped(&addr6->sin6_addr)) {
+				if (cmsg->cmsg_len == NET_CMSG_LEN(sizeof(int)) &&
+				    cmsg->cmsg_level == NET_IPPROTO_IP &&
+				    cmsg->cmsg_type == ZSOCK_IP_DONTFRAG) {
+					dont_fragment = *(int *)NET_CMSG_DATA(cmsg) != 0;
+					break;
+				}
+			} else if (cmsg->cmsg_len == NET_CMSG_LEN(sizeof(int)) &&
+				   cmsg->cmsg_level == NET_IPPROTO_IPV6 &&
+				   cmsg->cmsg_type == ZSOCK_IPV6_DONTFRAG) {
+				dont_fragment = *(int *)NET_CMSG_DATA(cmsg) != 0;
+				break;
+			}
+		}
+	}
+
+	return dont_fragment;
+}
+
 static int context_sendto(struct net_context *context,
 			  const void *buf,
 			  size_t len,
@@ -2452,6 +2578,9 @@ static int context_sendto(struct net_context *context,
 	struct net_if *iface = NULL;
 	struct net_pkt *pkt = NULL;
 	struct net_sockaddr_in mapped;
+	bool dont_fragment = COND_CASE_1(CONFIG_NET_IPV4, (context->options.dont_fragment),
+					 CONFIG_NET_IPV6, (context->options.dont_fragment),
+					 (false));
 	net_sa_family_t family;
 	size_t tmp_len;
 	int ret;
@@ -2784,6 +2913,8 @@ static int context_sendto(struct net_context *context,
 		}
 
 		set_pkt_hoplimit(pkt, msghdr);
+		dont_fragment = get_pkt_dont_fragment(context, family, msghdr);
+		net_pkt_set_dont_fragment(pkt, dont_fragment);
 
 	}
 
@@ -2818,7 +2949,7 @@ skip_alloc:
 	} else if (IS_ENABLED(CONFIG_NET_UDP) &&
 	    net_context_get_proto(context) == NET_IPPROTO_UDP) {
 		ret = context_setup_udp_packet(context, family, pkt, buf, len, msghdr,
-					       dst_addr, addrlen);
+					       dst_addr, addrlen, dont_fragment);
 		if (ret < 0) {
 			goto fail;
 		}
@@ -3606,6 +3737,39 @@ static int set_context_sndbuf(struct net_context *context,
 #endif
 }
 
+static int set_context_linger(struct net_context *context,
+			      const void *value, uint32_t len)
+{
+#if defined(CONFIG_NET_CONTEXT_LINGER)
+	const struct net_linger *linger = value;
+
+	/* SO_LINGER is only meaningful for connection-oriented (stream)
+	 * sockets.
+	 */
+	if (net_context_get_type(context) != NET_SOCK_STREAM) {
+		return -ENOTSUP;
+	}
+
+	if (value == NULL || len != sizeof(struct net_linger)) {
+		return -EINVAL;
+	}
+
+	if (linger->l_linger < 0) {
+		return -EINVAL;
+	}
+
+	context->options.linger = *linger;
+
+	return 0;
+#else
+	ARG_UNUSED(context);
+	ARG_UNUSED(value);
+	ARG_UNUSED(len);
+
+	return -ENOTSUP;
+#endif /* CONFIG_NET_CONTEXT_LINGER */
+}
+
 static int set_context_dscp_ecn(struct net_context *context,
 				const void *value, uint32_t len)
 {
@@ -4106,6 +4270,9 @@ int net_context_set_option(struct net_context *context,
 	case NET_OPT_DONT_FRAGMENT:
 		ret = set_context_dont_fragment(context, value, len);
 		break;
+	case NET_OPT_LINGER:
+		ret = set_context_linger(context, value, len);
+		break;
 	}
 
 	k_mutex_unlock(&context->lock);
@@ -4202,6 +4369,9 @@ int net_context_get_option(struct net_context *context,
 		break;
 	case NET_OPT_DONT_FRAGMENT:
 		ret = get_context_dont_fragment(context, value, len);
+		break;
+	case NET_OPT_LINGER:
+		ret = get_context_linger(context, value, len);
 		break;
 	}
 

@@ -89,6 +89,26 @@
 #           files-regex-exclude:
 #             - <regex pattern>
 #             - <regex pattern>
+#           defer-to-other-areas: true
+#
+#         defer-to-other-areas (optional, default false):
+#             When set to true on a file group, signals that the files in
+#             this group are not strictly maintained by this area alone.
+#             If another area also covers the same files without this flag,
+#             that other area's maintainer takes precedence as the PR
+#             assignee, and this area's maintainers are added as reviewers
+#             instead.  When no other area covers the files, this area is
+#             used for assignment as normal.
+#
+#             Typical use case: a subsystem area (e.g. Clock Control) owns
+#             generic driver infrastructure under drivers/clock_control/,
+#             but a platform area (e.g. a Nordic SoC area) also covers the
+#             platform-specific files in that directory.  The subsystem
+#             maintainer can add those platform-specific files to a
+#             file-group with defer-to-other-areas: true so that the
+#             platform maintainer becomes the assignee for PRs touching
+#             those files, while the subsystem maintainer is still
+#             notified as a reviewer.
 #
 #     description: >-
 #         Plain-English description. Describe what the system is about, from an
@@ -573,12 +593,7 @@ Bluetooth Audio:
     - tests/bluetooth/tester/src/audio/
     - doc/services/connectivity/bluetooth/api/audio/
     - doc/services/connectivity/bluetooth/shell/audio/
-    - samples/bluetooth/bap*/
-    - samples/bluetooth/cap*/
-    - samples/bluetooth/ccp*/
-    - samples/bluetooth/hap*/
-    - samples/bluetooth/pbp*/
-    - samples/bluetooth/tmap*/
+    - samples/bluetooth/audio/
   labels:
     - "area: Bluetooth Audio"
     - "area: Bluetooth"
@@ -644,8 +659,8 @@ Bluetooth HCI:
   status: maintained
   maintainers:
     - jhedberg
-    - alwa-nordic
   collaborators:
+    - alwa-nordic
     - hermabe
     - Thalley
     - sjanc
@@ -665,20 +680,21 @@ Bluetooth HCI:
     - "area: Bluetooth"
   tests:
     - bluetooth
+    - sample.bluetooth
 
 Bluetooth Host:
   status: maintained
   maintainers:
     - jhedberg
-    - alwa-nordic
   collaborators:
+    - alwa-nordic
     - hermabe
-    - rugeGerritsen
     - sjanc
     - Thalley
     - cvinayak
     - HaavardRei
     - alxelax
+    - lylezhu2012
   files:
     - doc/services/connectivity/bluetooth/
     - include/zephyr/bluetooth/
@@ -711,13 +727,8 @@ Bluetooth Host:
     - doc/services/connectivity/bluetooth/shell/classic/
     - doc/services/connectivity/bluetooth/shell/host/iso.rst
     - doc/services/connectivity/bluetooth/shell/audio/
-    - samples/bluetooth/bap*/
-    - samples/bluetooth/cap*/
-    - samples/bluetooth/ccp*/
-    - samples/bluetooth/hap*/
+    - samples/bluetooth/audio/
     - samples/bluetooth/hci_*/
-    - samples/bluetooth/pbp*/
-    - samples/bluetooth/tmap*/
     - samples/bluetooth/iso_*/
     - samples/bluetooth/mesh*/
     - samples/bluetooth/classic/
@@ -889,11 +900,17 @@ Bouffalolab Platforms:
     - "platform: Bouffalo Lab"
 
 Broadcom Platforms:
-  status: odd fixes
+  status: maintained
+  maintainers:
+    - walidbadar
   files:
     - dts/*/broadcom/
     - soc/brcm/
     - boards/brcm/
+    - boards/raspberrypi/rpi_4b/
+    - boards/raspberrypi/rpi_5/
+  labels:
+    - "platform: Broadcom"
 
 Build Dashboard:
   status: maintained
@@ -1272,6 +1289,7 @@ Device Driver Model:
   collaborators:
     - dcpleung
     - nashif
+    - edersondisouza
   files:
     - include/zephyr/device.h
     - kernel/device.c
@@ -1286,12 +1304,12 @@ Device Driver Model:
     - init
 
 Devicetree:
-  status: maintained
-  maintainers:
-    - mbolivar
+  status: odd fixes
   collaborators:
-    - decsny
+    - mbolivar
     - rruuaanng
+    - kylebonnici
+    - maass-hamburg
   files-regex:
     - ^dts/bindings/.*zephyr.*
     - ^dts/bindings/[^,]+$
@@ -1348,8 +1366,6 @@ Disk:
     - dts/bindings/disk/
   file-groups:
     - name: eMMC
-      collaborators:
-        - decsny
       files-regex:
         - ^(?!.*sdmmc).*mmc
   labels:
@@ -1622,6 +1638,7 @@ Documentation Infrastructure:
     - "area: Clock Monitor"
   tests:
     - drivers.clock_monitor
+    - sample.drivers.clock_monitor
 
 "Drivers: Clock control":
   status: maintained
@@ -1637,6 +1654,14 @@ Documentation Infrastructure:
     - include/zephyr/drivers/clock_control/
     - doc/hardware/peripherals/clock_control.rst
     - samples/drivers/clock_control_*/
+  file-groups:
+    - name: Clock control driver
+      defer-to-other-areas: true
+      files:
+        - drivers/clock_control/clock_control_*.c
+        - drivers/clock_control/Kconfig.*
+        - dts/bindings/clock/
+        - include/zephyr/dt-bindings/clock/
   labels:
     - "area: Clock control"
   tests:
@@ -1780,6 +1805,8 @@ Documentation Infrastructure:
     - samples/drivers/dali/
   labels:
     - "area: DALI"
+  tests:
+    - sample.drivers.dali
 
 "Drivers: DMA":
   status: maintained
@@ -1911,7 +1938,6 @@ Documentation Infrastructure:
   maintainers:
     - maass-hamburg
   collaborators:
-    - decsny
     - lmajewski
     - pdgendt
     - ClaCodes
@@ -1934,6 +1960,7 @@ Documentation Infrastructure:
   tests:
     - net.ethernet
     - sample.drivers.ethernet
+    - net.ethernet.build
 
 "Drivers: FPGA":
   status: maintained
@@ -2343,7 +2370,7 @@ Documentation Infrastructure:
     - tests/drivers/mspi/
     - doc/hardware/peripherals/mspi.rst
     - dts/bindings/mspi/
-    - dts/bindings/mtd/mspi*
+    - dts/bindings/mtd/*mspi*
   labels:
     - "area: MSPI"
   tests:
@@ -2600,8 +2627,6 @@ Documentation Infrastructure:
 
 "Drivers: Reset":
   status: odd fixes
-  collaborators:
-    - decsny
   files:
     - drivers/reset/
     - include/zephyr/drivers/reset.h
@@ -2668,9 +2693,7 @@ Documentation Infrastructure:
     - sample.drivers.sent
 
 "Drivers: SMBus":
-  status: maintained
-  maintainers:
-    - finikorg
+  status: odd fixes
   files:
     - drivers/smbus/
     - dts/bindings/smbus/
@@ -2690,7 +2713,6 @@ Documentation Infrastructure:
     - tbursztyka
   collaborators:
     - teburd
-    - decsny
   files:
     - drivers/spi/
     - include/zephyr/drivers/spi.h
@@ -2948,6 +2970,7 @@ Documentation Infrastructure:
     - "area: Wi-Fi"
   tests:
     - drivers.net.wifi
+    - drivers.wifi
 
 "Drivers: Wi-Fi as nRF Wi-Fi":
   status: maintained
@@ -3086,6 +3109,7 @@ Espressif Platforms:
     - uLipe
     - raffarost
     - wmrsouza
+    - tmedicci
   files:
     - drivers/*/*esp32*.c
     - boards/espressif/
@@ -3095,6 +3119,8 @@ Espressif Platforms:
     - samples/boards/espressif/
     - tests/boards/espressif/
     - drivers/*/*esp32*/
+    - drivers/wifi/esp_hosted/
+    - drivers/wifi/esp_at/
   file-groups:
     - name: Espressif hosted Wi-Fi driver
       files:
@@ -3110,6 +3136,7 @@ Espressif Platforms:
     - esp.wifi.sec
     - sample.boards.esp32
     - sample.esp32.deep_sleep
+    - boards.espressif
 
 Ezurio platforms:
   status: maintained
@@ -3590,6 +3617,7 @@ Key-Value Storage Systems:
     - lyakh
     - pillo79
     - laurenmurphyx64
+    - edersondisouza
   files:
     - cmake/llext-edk.cmake
     - samples/subsys/llext/
@@ -3620,8 +3648,8 @@ Linker Scripts:
     - "area: Linker Scripts"
   tests:
     - linker
-    - buildsystem.app_dev.code_relocation
     - sample.app_dev.code_relocation_nocopy
+    - buildsystem.app_dev
 
 Linters and Static Analyzers:
   status: maintained
@@ -3631,6 +3659,7 @@ Linters and Static Analyzers:
     - nashif
     - kartben
     - pdgendt
+    - kylebonnici
   files:
     - .codechecker.yml
     - .codecov.yml
@@ -3767,6 +3796,16 @@ Logging:
     - libraries.mpsc_pbuf
     - libraries.spsc_pbuf
     - sample.logging
+
+M5Stack Platforms:
+  status: maintained
+  maintainers:
+    - thc1006
+  files:
+    - boards/m5stack/
+    - boards/shields/m5stack_*/
+  labels:
+    - "platform: M5Stack"
 
 MAINTAINERS file:
   status: maintained
@@ -3947,6 +3986,23 @@ Microchip SAM Platforms:
     - include/zephyr/*/*/*atmel*
   labels:
     - "platform: Microchip SAM"
+
+Microchip SmartFusion2 platform:
+  status: maintained
+  maintainers:
+    - akBavMat
+    - con-pax
+  collaborators:
+    - AntonVynohradov
+  files:
+    - boards/microchip/m2s010_mkr_kit/
+    - drivers/clock_control/*smartfusion2*
+    - dts/arm/microchip/smartfusion2*/
+    - dts/bindings/*/microchip,smartfusion2*
+    - include/zephyr/dt-bindings/*/*smartfusion2*
+    - soc/microchip/smartfusion2*/
+  labels:
+    - "platform: Microchip SmartFusion2"
 
 Microchip Standalone Devices:
   status: maintained
@@ -4640,6 +4696,7 @@ Networking:
     - "area: MCP"
   tests:
     - net.mcp
+    - sample.net.mcp
 
 "Networking: MQTT":
   status: maintained
@@ -4767,11 +4824,14 @@ Networking:
   tests:
     - net.wifi
     - sample.net.wifi
+    - wifi.build.nan
 
 "Networking: gPTP":
   status: maintained
   maintainers:
     - jukkar
+  collaborators:
+    - yangbolu1991
   files:
     - doc/services/connectivity/networking/api/gptp.rst
     - include/zephyr/net/gptp.h
@@ -4942,10 +5002,10 @@ PMCI:
   status: maintained
   maintainers:
     - teburd
+    - edersondisouza
   collaborators:
     - nashif
     - kehintel
-    - edersondisouza
   files:
     - subsys/pmci/
     - samples/subsys/pmci/
@@ -4975,6 +5035,7 @@ POSIX API layer:
     - portability.posix
     - sample.posix
     - portability.xsi
+    - posix.threads_base
 
 Panasonic Platforms:
   status: maintained
@@ -5048,10 +5109,10 @@ RISCV arch:
   status: maintained
   maintainers:
     - fkokosinski
+  collaborators:
     - kgugala
     - tgorochowik
-  collaborators:
-    - edersondisouza
+    - dcpleung
     - katsuster
     - mgielda
     - npitre
@@ -5071,11 +5132,15 @@ RISCV arch:
     - boards/starfive/
     - cmake/compiler/*/target_riscv.cmake
     - doc/hardware/arch/risc-v.rst
+    - drivers/interrupt_controller/Kconfig.riscv_*
     - drivers/interrupt_controller/intc_plic.c
-    - drivers/interrupt_controller/intc_riscv_imsic.c
+    - drivers/interrupt_controller/intc_riscv_*
+    - dts/bindings/interrupt-controller/riscv,*
     - dts/bindings/riscv/
     - dts/riscv/
     - include/zephyr/arch/riscv/
+    - include/zephyr/drivers/interrupt_controller/riscv_*
+    - samples/drivers/interrupt_controller/intc_riscv_aia*/
     - soc/common/riscv-privileged/
     - soc/qemu/virt_riscv/
     - soc/sifive/
@@ -5709,10 +5774,16 @@ Silabs Platforms:
     - drivers/*/*/*siwx91x*
     - tests/boards/silabs/
     - snippets/*silabs*/
+  file-groups:
+    - name: Silabs IEEE 802.15.4
+      collaborators:
+        - db00lean
+      files:
+        - drivers/ieee802154/
   labels:
     - "platform: Silabs"
   tests:
-    - boards.silabs.dma.block_append.dma_m2m_ba
+    - boards.silabs
 
 Silabs SiM3U Platforms:
   status: maintained
@@ -6134,6 +6205,11 @@ Twister:
     - scripts/pylib/*-twister-harness/
   labels:
     - "area: Twister"
+  tests:
+    - kernel.common
+    - sample.pytest
+    - sample.harness
+    - sample.twister
 
 USB:
   status: maintained
@@ -6945,10 +7021,10 @@ West:
   status: maintained
   maintainers:
     - teburd
+    - edersondisouza
   collaborators:
     - nashif
     - dkalowsk
-    - edersondisouza
   files: []
   labels:
     - "area: MCTP"
@@ -7036,14 +7112,15 @@ West:
     - secure_storage.psa
     - crypto.mbedtls_psa
     - crypto.secp256r1
+    - crypto.psa
 
 "West project: mcuboot":
   status: maintained
   maintainers:
     - d3zd3z
+    - nordicjm
   collaborators:
     - de-nordic
-    - nordicjm
   files:
     - modules/Kconfig.mcuboot
     - tests/boot/

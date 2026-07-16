@@ -446,7 +446,15 @@ void net_if_stats_reset_all(void)
 
 static inline void init_iface(struct net_if *iface)
 {
-	const struct net_if_api *api = net_if_get_device(iface)->api;
+	const struct device *dev = net_if_get_device(iface);
+	const struct net_if_api *api;
+
+	if (!device_is_ready(dev)) {
+		NET_ERR("Iface %p device not ready", iface);
+		return;
+	}
+
+	api = dev->api;
 
 	if (!api || !api->init) {
 		NET_ERR("Iface %p driver API init NULL", iface);
@@ -1286,6 +1294,69 @@ static void join_mcast_nodes(struct net_if *iface, struct net_in6_addr *addr)
 #define join_mcast_nodes(...)
 #endif /* CONFIG_NET_IPV6_MLD */
 
+/* Generate and add the interface's link-local address. This is run on interface
+ * bring-up regardless of DAD: with DAD it is the address DAD is started for,
+ * without DAD it is the only thing that adds the link-local address. Returns the
+ * added address, or NULL on error. May be called with or without the interface
+ * lock held (the lock is recursive).
+ */
+static struct net_if_addr *iface_ipv6_lladdr_add(struct net_if *iface)
+{
+	struct net_if_ipv6 *ipv6;
+	struct net_in6_addr addr = { };
+	struct net_if_addr *ifaddr = NULL;
+	int ret;
+
+	net_if_lock(iface);
+
+	ret = net_if_config_ipv6_get(iface, &ipv6);
+	if (ret < 0) {
+		if (ret != -ENOTSUP) {
+			NET_WARN("Cannot autoconfigure IPv6, config is not valid.");
+		}
+
+		goto out;
+	}
+
+	if (ipv6 == NULL) {
+		goto out;
+	}
+
+	ret = net_ipv6_addr_generate_iid(iface, NULL,
+					 COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
+						     ((uint8_t *)&ipv6->network_counter),
+						     (NULL)),
+					 COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
+						     (sizeof(ipv6->network_counter)),
+						     (0U)),
+					 COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
+						     (COND_CODE_1(CONFIG_NET_IPV6_DAD,
+								  (ipv6->iid ?
+								   ipv6->iid->dad_count : 0U),
+								  (0U))),
+						     (0U)),
+					 &addr,
+					 net_if_get_link_addr(iface));
+	if (ret < 0) {
+		NET_WARN("IPv6 IID generation issue (%d)", ret);
+		goto out;
+	}
+
+	ifaddr = net_if_ipv6_addr_add(iface, &addr, NET_ADDR_AUTOCONF, 0);
+	if (ifaddr == NULL) {
+		NET_ERR("Cannot add %s address to interface %p",
+			net_sprint_ipv6_addr(&addr), iface);
+		goto out;
+	}
+
+	IF_ENABLED(CONFIG_NET_IPV6_IID_STABLE, (ipv6->iid = ifaddr));
+
+out:
+	net_if_unlock(iface);
+
+	return ifaddr;
+}
+
 #if defined(CONFIG_NET_IPV6_DAD)
 #define DAD_TIMEOUT 100U /* ms */
 
@@ -1392,54 +1463,24 @@ void net_if_ipv6_start_dad(struct net_if *iface,
 
 void net_if_start_dad(struct net_if *iface)
 {
-	struct net_if_addr *ifaddr, *next;
+	struct net_if_addr *ifaddr, *next, *lladdr;
 	struct net_if_ipv6 *ipv6;
 	sys_slist_t dad_needed;
-	struct net_in6_addr addr = { };
-	int ret;
 
 	net_if_lock(iface);
 
 	NET_DBG("Starting DAD for iface %d", net_if_get_by_iface(iface));
 
-	ret = net_if_config_ipv6_get(iface, &ipv6);
-	if (ret < 0) {
-		if (ret != -ENOTSUP) {
-			NET_WARN("Cannot do DAD IPv6 config is not valid.");
-		}
+	/* Add the link-local address. This also configures IPv6 on the
+	 * interface. As the interface is up, the address add starts DAD for it
+	 * directly, so it is skipped in the loop below.
+	 */
+	lladdr = iface_ipv6_lladdr_add(iface);
 
+	ipv6 = iface->config.ip.ipv6;
+	if (ipv6 == NULL) {
 		goto out;
 	}
-
-	if (!ipv6) {
-		goto out;
-	}
-
-	ret = net_ipv6_addr_generate_iid(iface, NULL,
-					 COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
-						     ((uint8_t *)&ipv6->network_counter),
-						     (NULL)),
-					 COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
-						     (sizeof(ipv6->network_counter)),
-						     (0U)),
-					 COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
-						     (ipv6->iid ? ipv6->iid->dad_count : 0U),
-						     (0U)),
-					 &addr,
-					 net_if_get_link_addr(iface));
-	if (ret < 0) {
-		NET_WARN("IPv6 IID generation issue (%d)", ret);
-		goto out;
-	}
-
-	ifaddr = net_if_ipv6_addr_add(iface, &addr, NET_ADDR_AUTOCONF, 0);
-	if (!ifaddr) {
-		NET_ERR("Cannot add %s address to interface %p, DAD fails",
-			net_sprint_ipv6_addr(&addr), iface);
-		goto out;
-	}
-
-	IF_ENABLED(CONFIG_NET_IPV6_IID_STABLE, (ipv6->iid = ifaddr));
 
 	/* Start DAD for all the addresses that were added earlier when
 	 * the interface was down.
@@ -1449,7 +1490,7 @@ void net_if_start_dad(struct net_if *iface)
 	ARRAY_FOR_EACH(ipv6->unicast, i) {
 		if (!ipv6->unicast[i].is_used ||
 		    ipv6->unicast[i].address.family != NET_AF_INET6 ||
-		    &ipv6->unicast[i] == ifaddr ||
+		    &ipv6->unicast[i] == lladdr ||
 		    net_ipv6_is_addr_loopback(
 			    &ipv6->unicast[i].address.in6_addr)) {
 			continue;
@@ -2096,6 +2137,7 @@ struct net_if_addr *net_if_ipv6_addr_add(struct net_if *iface,
 	struct net_if_addr *ifaddr = NULL;
 	struct net_if_ipv6 *ipv6;
 	bool do_dad = false;
+	bool join_mcast = false;
 
 	net_if_lock(iface);
 
@@ -2132,12 +2174,24 @@ struct net_if_addr *net_if_ipv6_addr_add(struct net_if *iface,
 			net_sprint_ipv6_addr(addr),
 			net_addr_type2str(addr_type));
 
-		if (IS_ENABLED(CONFIG_NET_IPV6_DAD) &&
-		    !(l2_flags_get(iface) & NET_L2_POINT_TO_POINT) &&
+		if (!(l2_flags_get(iface) & NET_L2_POINT_TO_POINT) &&
 		    !net_ipv6_is_addr_loopback(addr) &&
 		    !net_if_flag_is_set(iface, NET_IF_IPV6_NO_ND)) {
-			/* The groups are joined without locks held */
-			do_dad = true;
+			/* The solicited-node multicast group must be joined
+			 * regardless of DAD (RFC 4291 ch 2.8) so that the node
+			 * answers neighbor solicitations for this address. The
+			 * groups are joined without locks held.
+			 */
+			join_mcast = true;
+
+			if (IS_ENABLED(CONFIG_NET_IPV6_DAD)) {
+				do_dad = true;
+			} else {
+				/* Without DAD the address is usable
+				 * immediately.
+				 */
+				ipv6->unicast[i].addr_state = NET_ADDR_PREFERRED;
+			}
 		} else {
 			/* If DAD is not done for point-to-point links, then
 			 * the address is usable immediately.
@@ -2156,20 +2210,22 @@ struct net_if_addr *net_if_ipv6_addr_add(struct net_if *iface,
 
 	net_if_unlock(iface);
 
-	if (ifaddr != NULL && do_dad) {
-		/* RFC 4862 5.4.2
-		 * Before sending a Neighbor Solicitation, an interface
-		 * MUST join the all-nodes multicast address and the
-		 * solicited-node multicast address of the tentative
-		 * address.
-		 */
+	if (ifaddr != NULL && join_mcast) {
 		/* The allnodes multicast group is only joined once as
 		 * net_ipv6_mld_join() checks if we have already
 		 * joined.
 		 */
 		join_mcast_nodes(iface, &ifaddr->address.in6_addr);
 
-		net_if_ipv6_start_dad(iface, ifaddr);
+		if (do_dad) {
+			/* RFC 4862 5.4.2
+			 * Before sending a Neighbor Solicitation, an interface
+			 * MUST join the all-nodes multicast address and the
+			 * solicited-node multicast address of the tentative
+			 * address. This is satisfied by the join above.
+			 */
+			net_if_ipv6_start_dad(iface, ifaddr);
+		}
 	}
 
 	return ifaddr;
@@ -3609,17 +3665,32 @@ struct net_if *net_if_ipv6_select_src_iface(const struct net_in6_addr *dst)
 uint32_t net_if_ipv6_calc_reachable_time(struct net_if_ipv6 *ipv6)
 {
 	uint32_t min_reachable, max_reachable;
+	uint32_t spread;
+
+	if (ipv6->base_reachable_time == 0U) {
+		return REACHABLE_TIME;
+	}
 
 	min_reachable = (MIN_RANDOM_NUMER * ipv6->base_reachable_time)
 			/ MIN_RANDOM_DENOM;
 	max_reachable = (MAX_RANDOM_NUMER * ipv6->base_reachable_time)
 			/ MAX_RANDOM_DENOM;
 
+	/* RFC 4861 uses MIN_RANDOM_FACTOR (1/2); round up so the range is never 0 ms */
+	if (min_reachable == 0U) {
+		min_reachable = 1U;
+	}
+
 	NET_DBG("min_reachable:%u max_reachable:%u", min_reachable,
 		max_reachable);
 
-	return min_reachable +
-	       sys_rand32_get() % (max_reachable - min_reachable);
+	if (max_reachable <= min_reachable) {
+		return min_reachable;
+	}
+
+	spread = max_reachable - min_reachable;
+
+	return min_reachable + sys_rand32_get() % spread;
 }
 
 static void iface_ipv6_start(struct net_if *iface)
@@ -3632,12 +3703,13 @@ static void iface_ipv6_start(struct net_if *iface)
 	if (IS_ENABLED(CONFIG_NET_IPV6_DAD)) {
 		net_if_start_dad(iface);
 	} else {
-		struct net_if_ipv6 *ipv6 = iface->config.ip.ipv6;
-
-		if (ipv6 != NULL) {
-			join_mcast_nodes(iface,
-					 &ipv6->mcast[0].address.in6_addr);
-		}
+		/* DAD normally generates the link-local address; do it here
+		 * when DAD is disabled. The address add joins the relevant
+		 * multicast groups (RFC 4291 ch 2.8), and the solicited-node
+		 * groups for any other addresses were already (re)joined by
+		 * rejoin_ipv6_mcast_groups() when the interface came up.
+		 */
+		iface_ipv6_lladdr_add(iface);
 	}
 
 	net_if_start_rs(iface);
@@ -3679,6 +3751,11 @@ static void iface_ipv6_stop(struct net_if *iface)
 	}
 
 	net_if_unlock(iface);
+
+	/* Drop cached neighbor entries: their reachability is no longer valid
+	 * once the link is down, so they are re-resolved when it comes back.
+	 */
+	net_ipv6_nbr_clear_cache(iface);
 }
 
 static void iface_ipv6_init(int if_count)
@@ -5302,6 +5379,26 @@ bool net_if_ipv4_router_rm(struct net_if_router *router)
 	return iface_router_rm(router);
 }
 
+int net_if_ipv4_route_add(struct net_if *iface, const struct net_in_addr *addr, uint8_t mask_len,
+			  const struct net_in_addr *nexthop, uint32_t lifetime)
+{
+#if defined(CONFIG_NET_IPV4_ROUTE)
+	struct net_route_entry *route;
+
+	route = net_route_ipv4_add(iface, (struct net_in_addr *)addr, mask_len,
+				   (struct net_in_addr *)nexthop, lifetime, 0);
+
+	return route == NULL ? -ENOMEM : 0;
+#else
+	ARG_UNUSED(iface);
+	ARG_UNUSED(addr);
+	ARG_UNUSED(mask_len);
+	ARG_UNUSED(nexthop);
+	ARG_UNUSED(lifetime);
+
+	return -ENOTSUP;
+#endif
+}
 
 static void iface_ipv4_init(int if_count)
 {

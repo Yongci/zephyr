@@ -6,8 +6,10 @@
  */
 
 #include <zephyr/sys/util.h>
+#include <zephyr/sys/minmax.h>
 #include <zephyr/llext/loader.h>
 #include <zephyr/llext/llext.h>
+#include <zephyr/arch/common/instr_mem.h>
 #include <zephyr/kernel.h>
 #include <zephyr/cache.h>
 
@@ -88,7 +90,7 @@ static int llext_copy_region(struct llext_loader *ldr, struct llext *ext,
 				 * to be sized and aligned to the same power of two.
 				 */
 				uintptr_t block_sz =
-					MAX(MAX(region_alloc, region_align), LLEXT_PAGE_SIZE);
+					max3(region_alloc, region_align, LLEXT_PAGE_SIZE);
 
 				block_sz = 1 << LOG2CEIL(block_sz); /* align to next power of two */
 				region_alloc = block_sz;
@@ -114,10 +116,14 @@ static int llext_copy_region(struct llext_loader *ldr, struct llext *ext,
 			/* Region has data in the file, check if peek() is supported */
 			ext->mem[mem_idx] = llext_peek(ldr, region->sh_offset);
 			if (ext->mem[mem_idx]) {
+				if (mem_idx == LLEXT_MEM_TEXT) {
+					ext->text_in_elf = ext->mem[mem_idx];
+				}
+
 				if ((IS_ALIGNED(ext->mem[mem_idx], region_align) ||
 				     ldr_parm->pre_located) &&
 				    ((mem_idx != LLEXT_MEM_TEXT) ||
-				     INSTR_FETCHABLE(ext->mem[mem_idx], region_alloc))) {
+				     arch_is_instr_mem(ext->mem[mem_idx], region_alloc))) {
 					/* Map this region directly to the ELF buffer */
 					llext_init_mem_part(ext, mem_idx,
 							    (uintptr_t)ext->mem[mem_idx],
@@ -127,7 +133,7 @@ static int llext_copy_region(struct llext_loader *ldr, struct llext *ext,
 				}
 
 				if ((mem_idx == LLEXT_MEM_TEXT) &&
-				    !INSTR_FETCHABLE(ext->mem[mem_idx], region_alloc)) {
+				    !arch_is_instr_mem(ext->mem[mem_idx], region_alloc)) {
 					LOG_WRN("Cannot reuse ELF buffer for region %d, not "
 						"instruction memory: %p-%p",
 						mem_idx, ext->mem[mem_idx],
