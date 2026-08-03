@@ -16,7 +16,12 @@ extern "C" {
 
 /**
  * @file
+ * @brief Header file for the ring buffer API.
+ * @ingroup ring_buffer_apis
+ *
  * @defgroup ring_buffer_apis Ring Buffer APIs
+ * @since 1.0
+ * @version 1.0.0
  * @ingroup datastructure_apis
  *
  * @brief Simple ring buffer implementation.

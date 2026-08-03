@@ -204,6 +204,10 @@ static void w6100_rx(const struct device *dev)
 	off = sys_get_be16(tmp);
 
 	w6100_readbuf(dev, off, header, 2);
+	if (sys_get_be16(header) <= 2U) {
+		LOG_ERR("Invalid W6100 header size %u", sys_get_be16(header));
+		return;
+	}
 	rx_len = sys_get_be16(header) - 2;
 
 	pkt = net_pkt_rx_alloc_with_buffer(ctx->iface, rx_len,
@@ -262,7 +266,6 @@ static void w6100_update_link_status(const struct device *dev)
 
 	if (IS_BIT_SET(physr, W6100_PHYSR_LNK_BIT)) {
 		if (ctx->state.is_up != true) {
-			LOG_INF("%s: Link up", dev->name);
 			ctx->state.is_up = true;
 			net_eth_carrier_on(ctx->iface);
 		}
@@ -285,7 +288,6 @@ static void w6100_update_link_status(const struct device *dev)
 	}
 
 	if (ctx->state.is_up) {
-		LOG_INF("%s: Link down", dev->name);
 		ctx->state.is_up = false;
 		ctx->state.speed = 0;
 		net_eth_carrier_off(ctx->iface);
@@ -327,7 +329,10 @@ static void w6100_thread(void *p1, void *p2, void *p3)
 			/* Read interrupt */
 			w6100_spi_read(dev, W6100_S0_IR, &ir, 1);
 			w6100_spi_read(dev, W6100_SLIR, &slir, 1);
-			w6100_spi_write(dev, W6100_SLIRCLR, &slir, 1);
+			/* SLIRCLR is write-1-to-clear; nothing to do when slir == 0 */
+			if (slir != 0U) {
+				w6100_spi_write(dev, W6100_SLIRCLR, &slir, 1);
+			}
 
 
 			if (ir) {

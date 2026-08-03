@@ -227,7 +227,13 @@ static void w5500_rx(const struct device *dev)
 	w5500_spi_read(dev, W5500_S0_RX_RD, tmp, 2);
 	off = sys_get_be16(tmp);
 
-	w5500_readbuf(dev, off, header, 2);
+	if (w5500_readbuf(dev, off, header, 2) < 0) {
+		return;
+	}
+	if (sys_get_be16(header) <= 2U) {
+		LOG_ERR("Invalid W5500 header size %u", sys_get_be16(header));
+		return;
+	}
 	rx_len = sys_get_be16(header) - 2;
 
 	pkt = net_pkt_rx_alloc_with_buffer(ctx->iface, rx_len, NET_AF_UNSPEC, 0,
@@ -286,7 +292,6 @@ static void w5500_update_link_status(const struct device *dev)
 
 	if (IS_BIT_SET(phycfgr, W5500_PHYCFGR_LNK_BIT)) {
 		if (ctx->state.is_up != true) {
-			LOG_INF("%s: Link up", dev->name);
 			ctx->state.is_up = true;
 			net_eth_carrier_on(ctx->iface);
 		}
@@ -310,7 +315,6 @@ static void w5500_update_link_status(const struct device *dev)
 	}
 
 	if (ctx->state.is_up) {
-		LOG_INF("%s: Link down", dev->name);
 		ctx->state.is_up = false;
 		ctx->state.speed = 0;
 		net_eth_carrier_off(ctx->iface);

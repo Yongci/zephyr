@@ -4,6 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/**
+ * @file
+ * @brief Header file for the System Power Management Policy API.
+ * @ingroup subsys_pm_sys_policy
+ */
+
 #ifndef ZEPHYR_INCLUDE_PM_POLICY_H_
 #define ZEPHYR_INCLUDE_PM_POLICY_H_
 
@@ -22,6 +28,8 @@ extern "C" {
 /**
  * @brief System Power Management Policy API
  * @defgroup subsys_pm_sys_policy Policy
+ * @since 2.7
+ * @version 1.0.0
  * @ingroup subsys_pm_sys
  * @{
  */

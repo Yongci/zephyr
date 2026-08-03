@@ -622,6 +622,13 @@ int hapd_config_network(struct hostapd_iface *iface,
 				   params->security);
 			goto out;
 		}
+
+		if (params->transition_disable) {
+			if (!hostapd_cli_cmd_v("set transition_disable %d",
+				   params->transition_disable)) {
+				goto out;
+			}
+		}
 	} else {
 		if (!hostapd_cli_cmd_v("set wpa 0")) {
 			goto out;
@@ -634,6 +641,10 @@ int hapd_config_network(struct hostapd_iface *iface,
 	}
 
 	if (!hostapd_cli_cmd_v("set ignore_broadcast_ssid %d", params->ignore_broadcast_ssid)) {
+		goto out;
+	}
+
+	if (!hostapd_cli_cmd_v("set ssid_protection %d", params->ssid_protection)) {
 		goto out;
 	}
 

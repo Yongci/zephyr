@@ -4,8 +4,8 @@
  */
 #include <zephyr/init.h>
 #include <zephyr/device.h>
-#include "fsl_power.h"
-#include "fsl_clock.h"
+#include <fsl_power.h>
+#include <fsl_clock.h>
 #include <soc.h>
 #include <fsl_glikey.h>
 
@@ -512,6 +512,11 @@ void board_early_init_hook(void)
 
 	POWER_DisablePD(kPDRUNCFG_APD_XSPI2);
 	POWER_DisablePD(kPDRUNCFG_PPD_XSPI2);
+	POWER_ApplyPD();
+#endif
+#ifdef CONFIG_NXP_NEUTRON
+	POWER_DisablePD(kPDRUNCFG_APD_NPU);
+	POWER_DisablePD(kPDRUNCFG_PPD_NPU);
 	POWER_ApplyPD();
 #endif
 }

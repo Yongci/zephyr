@@ -18,6 +18,7 @@ LOG_MODULE_REGISTER(net_test, CONFIG_QUIC_LOG_LEVEL);
 #include <zephyr/net/quic.h>
 
 #include "net_private.h"
+#include "pmtu.h"
 #include "quic_internal.h"
 #include "quic_stats.h"
 #include "quic_test.h"
@@ -34,6 +35,14 @@ LOG_MODULE_REGISTER(net_test, CONFIG_QUIC_LOG_LEVEL);
 
 #define REMOTE_ADDR_IPV4 "192.0.2.2"
 #define REMOTE_ADDR_IPV6 "2001:db8::2"
+
+#define QUIC_EXTERNAL_PSK_TAG 42426
+
+static const uint8_t quic_external_psk[] = {
+	0x61, 0x02, 0x33, 0x74, 0x95, 0xa6, 0x17, 0x28,
+	0x39, 0x4a, 0x5b, 0x6c, 0x7d, 0x8e, 0x9f, 0xb0,
+};
+static const uint8_t quic_external_psk_id[] = "quic-external-psk";
 
 static struct net_sockaddr_in local_addr_ipv4;
 static struct net_sockaddr_in6 local_addr_ipv6;
@@ -158,6 +167,7 @@ static struct quic_endpoint *reset_test_ep(struct quic_endpoint *ep)
 {
 	memset(ep, 0, sizeof(*ep));
 	ep->sock = -1;
+	quic_recovery_init(ep);
 
 	return ep;
 }
@@ -282,6 +292,18 @@ static void setup_certs(void)
 				 client_private_key, sizeof(client_private_key));
 	if (ret < 0) {
 		LOG_ERR("Failed to register client private key: %d", ret);
+	}
+
+	ret = tls_credential_add(QUIC_EXTERNAL_PSK_TAG, TLS_CREDENTIAL_PSK,
+				 quic_external_psk, sizeof(quic_external_psk));
+	if (ret < 0) {
+		LOG_ERR("Failed to register QUIC PSK: %d", ret);
+	}
+
+	ret = tls_credential_add(QUIC_EXTERNAL_PSK_TAG, TLS_CREDENTIAL_PSK_ID,
+				 quic_external_psk_id, sizeof(quic_external_psk_id) - 1);
+	if (ret < 0) {
+		LOG_ERR("Failed to register QUIC PSK identity: %d", ret);
 	}
 }
 
@@ -657,6 +679,33 @@ static size_t append_cid_transport_param(uint8_t *buf, size_t buf_len,
 	return pos;
 }
 
+static size_t append_varint_transport_param(uint8_t *buf, size_t buf_len,
+					    uint64_t param_id, uint64_t value)
+{
+	uint8_t value_buf[8];
+	size_t pos = 0;
+	int ret;
+	int value_len;
+
+	ret = quic_put_varint(&buf[pos], buf_len - pos, param_id);
+	zassert_true(ret > 0, "Failed to encode transport param id %" PRIu64, param_id);
+	pos += ret;
+
+	value_len = quic_put_varint(value_buf, sizeof(value_buf), value);
+	zassert_true(value_len > 0, "Failed to encode transport param value %" PRIu64, value);
+
+	ret = quic_put_varint(&buf[pos], buf_len - pos, value_len);
+	zassert_true(ret > 0, "Failed to encode transport param value len %d", value_len);
+	pos += ret;
+
+	zassert_true(pos + value_len <= buf_len,
+		     "Transport param buffer too small (%zu > %zu)", pos + value_len, buf_len);
+	memcpy(&buf[pos], value_buf, value_len);
+	pos += value_len;
+
+	return pos;
+}
+
 static void build_test_retry_info(struct quic_long_header_info *info,
 				  uint8_t *packet,
 				  const uint8_t *src_conn_id,
@@ -957,17 +1006,717 @@ ZTEST(net_socket_quic, test_080_frame_type_level_validation)
 	zassert_equal(ret, -ENOTSUP, "Unknown frame type must be rejected (%d)", ret);
 }
 
+ZTEST(net_socket_quic, test_081_0rtt_frame_type_level_validation)
+{
+	int ret;
+
+	ret = quic_validate_frame_type(QUIC_FRAME_TYPE_STREAM_BASE,
+					 QUIC_SECRET_LEVEL_EARLY);
+	zassert_equal(ret, 0, "STREAM must be allowed in 0-RTT (%d)", ret);
+
+	ret = quic_validate_frame_type(QUIC_FRAME_TYPE_MAX_DATA,
+					 QUIC_SECRET_LEVEL_EARLY);
+	zassert_equal(ret, 0, "MAX_DATA must be allowed in 0-RTT (%d)", ret);
+
+	ret = quic_validate_frame_type(QUIC_FRAME_TYPE_PATH_CHALLENGE,
+					 QUIC_SECRET_LEVEL_EARLY);
+	zassert_equal(ret, 0, "PATH_CHALLENGE must be allowed in 0-RTT (%d)", ret);
+
+	ret = quic_validate_frame_type(QUIC_FRAME_TYPE_ACK,
+					 QUIC_SECRET_LEVEL_EARLY);
+	zassert_equal(ret, -EPROTO, "ACK must be forbidden in 0-RTT (%d)", ret);
+
+	ret = quic_validate_frame_type(QUIC_FRAME_TYPE_CRYPTO,
+					 QUIC_SECRET_LEVEL_EARLY);
+	zassert_equal(ret, -EPROTO, "CRYPTO must be forbidden in 0-RTT (%d)", ret);
+
+	ret = quic_validate_frame_type(QUIC_FRAME_TYPE_NEW_TOKEN,
+					 QUIC_SECRET_LEVEL_EARLY);
+	zassert_equal(ret, -EPROTO, "NEW_TOKEN must be forbidden in 0-RTT (%d)", ret);
+
+	ret = quic_validate_frame_type(QUIC_FRAME_TYPE_PATH_RESPONSE,
+					 QUIC_SECRET_LEVEL_EARLY);
+	zassert_equal(ret, -EPROTO, "PATH_RESPONSE must be forbidden in 0-RTT (%d)", ret);
+}
+
+ZTEST(net_socket_quic, test_082_client_early_data_arming_uses_session_state)
+{
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	enum quic_secret_level expected_level;
+
+	ep->is_server = false;
+	ep->crypto.tls.is_initialized = true;
+	ep->crypto.tls.session_state_valid = true;
+	ep->crypto.tls.early_data_offered = true;
+	ep->crypto.tls.session_state.max_early_data_size = 4096U;
+	ep->crypto.early.initialized = true;
+
+	expected_level = IS_ENABLED(CONFIG_QUIC_0RTT) ?
+		QUIC_SECRET_LEVEL_EARLY : QUIC_SECRET_LEVEL_APPLICATION;
+
+	zassert_equal(quic_early_data_is_armed(ep), IS_ENABLED(CONFIG_QUIC_0RTT),
+		      "Imported session state should only arm 0-RTT when enabled");
+	zassert_equal(quic_stream_send_level(ep), expected_level,
+		      "Unexpected send level when early data is configured");
+
+	ep->crypto.tls.session_state_valid = false;
+	zassert_false(quic_early_data_is_armed(ep),
+		      "Missing resumable session state must disable 0-RTT");
+	zassert_equal(quic_stream_send_level(ep), QUIC_SECRET_LEVEL_APPLICATION,
+		      "Missing resumable state must fall back to application keys");
+}
+
+ZTEST(net_socket_quic, test_083_client_early_data_decision_tracks_encrypted_extensions)
+{
+	static const uint8_t accept_ee[] = {
+		0x00, 0x04,
+		0x00, TLS_EXT_EARLY_DATA, 0x00, 0x00,
+	};
+	static const uint8_t reject_ee[] = { 0x00, 0x00 };
+	struct quic_tls_context tls = { 0 };
+	int ret;
+
+	tls.early_data_offered = true;
+
+	ret = parse_encrypted_extensions(&tls, accept_ee, sizeof(accept_ee));
+	if (IS_ENABLED(CONFIG_QUIC_0RTT)) {
+		zassert_ok(ret, "EncryptedExtensions with early_data should parse (%d)", ret);
+		zassert_true(tls.early_data_accepted,
+			     "early_data extension should mark 0-RTT as accepted");
+		zassert_false(tls.early_data_rejected,
+			      "Accepted early data must not leave rejection state set");
+	} else {
+		zassert_equal(ret, -EINVAL,
+			      "EncryptedExtensions must reject early_data when disabled");
+	}
+
+	tls.early_data_accepted = false;
+	tls.early_data_rejected = false;
+
+	ret = parse_encrypted_extensions(&tls, reject_ee, sizeof(reject_ee));
+	zassert_ok(ret, "EncryptedExtensions without early_data should parse (%d)", ret);
+	zassert_false(tls.early_data_accepted,
+		      "Missing early_data extension must reject 0-RTT");
+	zassert_true(tls.early_data_rejected,
+		     "Rejected 0-RTT must be recorded for replay fallback");
+}
+
+/* Ticket lifetime used when seeding the server ticket cache in the unit tests
+ * below (matches the production QUIC_SESSION_TICKET_LIFETIME_SEC, kept local as
+ * that define is internal to quic_tls.c).
+ */
+#define QUIC_SESSION_TICKET_LIFETIME_SEC_TEST 86400U
+
+/* A server session ticket must be single-use: once consumed (after the binder
+ * is verified) a replayed ClientHello carrying the same ticket can no longer
+ * resume the connection or replay its 0-RTT data (RFC 8446 8.1).
+ */
+ZTEST(net_socket_quic, test_086_server_ticket_single_use)
+{
+	static const uint8_t ticket[32] = {
+		0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+		0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+		0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
+		0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+	};
+	static const uint8_t psk[32] = {
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+	};
+	int ret;
+
+	ret = tls_server_ticket_cache_store(ticket, sizeof(ticket), psk, sizeof(psk),
+					    0x1301, QUIC_SESSION_TICKET_LIFETIME_SEC_TEST,
+					    0x12345678U, 4096U, "h3");
+	zassert_ok(ret, "Failed to store server session ticket (%d)", ret);
+
+	zassert_true(tls_server_ticket_cache_lookup(ticket, sizeof(ticket), NULL),
+		     "Stored ticket must be found before use");
+
+	tls_server_ticket_cache_consume(ticket, sizeof(ticket));
+
+	zassert_false(tls_server_ticket_cache_lookup(ticket, sizeof(ticket), NULL),
+		      "Consumed ticket must not be reusable (0-RTT replay protection)");
+}
+
+/* 0-RTT is only accepted when the age the client reports for the ticket is
+ * close to the age the server expects (RFC 8446 8.2).
+ */
+ZTEST(net_socket_quic, test_087_server_ticket_age_freshness)
+{
+	const uint64_t issued_at_ms = 1000U;
+	const uint32_t age_add = 0x40000000U;
+	const uint64_t now_ms = issued_at_ms + 2000U; /* 2s after issue */
+
+	zassert_true(tls_ticket_age_acceptable(issued_at_ms, age_add,
+					       2000U + age_add, now_ms),
+		     "Ticket age matching the expected age must be accepted");
+
+	zassert_false(tls_ticket_age_acceptable(issued_at_ms, age_add,
+						120000U + age_add, now_ms),
+		      "Ticket age far outside the freshness window must be rejected");
+}
+
+ZTEST(net_socket_quic, test_084_rejected_early_data_clears_inflight_tracking)
+{
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	struct quic_sent_pkt_info *info;
+	/* 0-RTT shares the application-data packet number space. */
+	int pn_space = 2;
+	int ret;
+
+	quic_recovery_init(ep);
+	info = &ep->recovery.sent_pkts[pn_space][0];
+	info->level = QUIC_SECRET_LEVEL_EARLY;
+	info->in_flight = true;
+	info->sent_bytes = 123U;
+	ep->recovery.bytes_in_flight = 123U;
+
+	ret = quic_mark_rejected_early_data(ep);
+	zassert_ok(ret, "Rejected 0-RTT cleanup should succeed (%d)", ret);
+	if (IS_ENABLED(CONFIG_QUIC_0RTT)) {
+		zassert_false(info->in_flight,
+			      "Rejected early packets must stop counting as in-flight");
+		zassert_equal(ep->recovery.bytes_in_flight, 0U,
+			      "Rejected early packets must be removed from bytes-in-flight");
+	} else {
+		zassert_true(info->in_flight,
+			     "Disabled 0-RTT must leave early-packet state untouched");
+		zassert_equal(ep->recovery.bytes_in_flight, 123U,
+			      "Disabled 0-RTT must not alter bytes-in-flight accounting");
+	}
+}
+
+ZTEST(net_socket_quic, test_085_rejected_early_data_disarms_send_path)
+{
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+
+	ep->is_server = false;
+	ep->crypto.tls.is_initialized = true;
+	ep->crypto.tls.session_state_valid = true;
+	ep->crypto.tls.early_data_offered = true;
+	ep->crypto.tls.early_data_rejected = true;
+	ep->crypto.tls.session_state.max_early_data_size = 4096U;
+	ep->crypto.early.initialized = true;
+
+	zassert_false(quic_early_data_is_armed(ep),
+		      "Rejected early data must disarm the 0-RTT send path");
+	zassert_equal(quic_stream_send_level(ep), QUIC_SECRET_LEVEL_APPLICATION,
+		      "Rejected early data must fall back to application keys");
+}
+
+/* RFC 9001 4.6.1: a QUIC NewSessionTicket early_data extension MUST carry the
+ * fixed 0xffffffff sentinel; the client MUST reject any other value as a
+ * PROTOCOL_VIOLATION instead of interpreting it as a byte limit.
+ */
+ZTEST(net_socket_quic, test_089_new_session_ticket_early_data_must_be_sentinel)
+{
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	struct quic_tls_context *tls = &ep->crypto.tls;
+	uint8_t ticket_msg[] = {
+		0x00, 0x00, 0x00, 0x00,   /* ticket_lifetime */
+		0x00, 0x00, 0x00, 0x00,   /* ticket_age_add */
+		0x00,                     /* ticket_nonce_len = 0 */
+		0x00, 0x01,               /* ticket_len = 1 */
+		0xaa,                     /* ticket identity */
+		0x00, 0x08,               /* extensions_len = 8 */
+		0x00, TLS_EXT_EARLY_DATA, /* early_data extension */
+		0x00, 0x04,               /* ext_len = 4 */
+		0x00, 0x00, 0x10, 0x00,   /* max_early_data_size = 4096 (not the sentinel) */
+	};
+	int ret;
+
+	ep->is_server = false;
+	tls->ep = ep;
+	/* Short-circuit the resumption-master-secret derivation so the parser
+	 * reaches the early_data extension without a full key schedule.
+	 */
+	tls->ks.hash_alg = PSA_ALG_SHA_256;
+	tls->ks.hash_len = 32U;
+	tls->resumption_master_secret_len = 32U;
+
+	ret = parse_new_session_ticket(tls, ticket_msg, sizeof(ticket_msg));
+	zassert_equal(ret, -EPROTO,
+		      "Non-sentinel early_data size must be rejected (%d)", ret);
+
+	/* The RFC-mandated 0xffffffff sentinel must instead be accepted. */
+	ticket_msg[18] = 0xFF;
+	ticket_msg[19] = 0xFF;
+	ticket_msg[20] = 0xFF;
+	ticket_msg[21] = 0xFF;
+
+	ret = parse_new_session_ticket(tls, ticket_msg, sizeof(ticket_msg));
+	zassert_ok(ret, "Sentinel early_data size must be accepted (%d)", ret);
+}
+
 ZTEST(net_socket_quic, test_090_recovery_shutdown_stops_tracking)
 {
 	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
 
-	quic_recovery_init(ep);
 	quic_recovery_begin_shutdown(ep);
-	quic_recovery_on_packet_sent(ep, QUIC_SECRET_LEVEL_APPLICATION, 1, 123, true);
+	quic_recovery_on_packet_sent(ep, QUIC_SECRET_LEVEL_APPLICATION, 1, 123, true,
+				      false, 0);
 
 	zassert_true(ep->recovery.closing, "Recovery must stay in shutdown state");
 	zassert_equal(ep->recovery.bytes_in_flight, 0,
 		      "Shutdown recovery must not track new in-flight bytes");
+}
+
+static void init_test_dplpmtud_endpoint(struct quic_endpoint *ep)
+{
+	int ret;
+
+	reset_test_ep(ep);
+	ep->handshake.completed = true;
+	ep->peer_params.max_udp_payload_size = UINT16_MAX;
+	memcpy(&ep->remote_addr, &local_addr_ipv4, sizeof(local_addr_ipv4));
+	ep->max_tx_payload_size = QUIC_DPLPMTUD_BASE_PLPMTU;
+
+	ret = net_pmtu_update_mtu(net_sad(&ep->remote_addr), 1500U);
+	zassert_true(ret >= 0, "Failed to seed PMTU for test path (%d)", ret);
+
+	ret = net_dplpmtud_init_path(&ep->dplpmtud.path, net_sad(&ep->remote_addr), 1452U);
+	zassert_ok(ret, "Failed to init test DPLPMTUD path (%d)", ret);
+
+	quic_dplpmtud_refresh_state(ep);
+}
+
+static void note_test_probe_sent(struct quic_endpoint *ep, uint16_t probe_size)
+{
+	int ret;
+
+	ret = net_dplpmtud_on_path_probe_sent(&ep->dplpmtud.path, probe_size);
+	zassert_ok(ret, "Failed to report probe send (%d)", ret);
+}
+
+ZTEST(net_socket_quic, test_095_dplpmtud_keeps_peer_cap_separate)
+{
+	struct quic_endpoint *ep = &test_ep_a;
+
+	init_test_dplpmtud_endpoint(ep);
+	ep->peer_params.max_udp_payload_size = 1400U;
+
+	quic_dplpmtud_refresh_state(ep);
+
+	zassert_equal(ep->peer_params.max_udp_payload_size, 1400U,
+		      "Peer max UDP payload size must be stored separately");
+	zassert_equal(ep->max_tx_payload_size, QUIC_DPLPMTUD_BASE_PLPMTU,
+		      "TX payload size must stay at the validated base size");
+	zassert_true(net_dplpmtud_get_path_probe_size(&ep->dplpmtud.path) > 0,
+		     "A larger payload should schedule probing");
+}
+
+ZTEST(net_socket_quic, test_096_dplpmtud_probe_ack_raises_payload_limit)
+{
+	struct quic_endpoint *ep = &test_ep_a;
+	uint16_t probe_size = 1326U;
+
+	init_test_dplpmtud_endpoint(ep);
+	note_test_probe_sent(ep, probe_size);
+
+	quic_dplpmtud_on_probe_acked(ep, probe_size);
+
+	zassert_equal(net_dplpmtud_get_path_mtu(&ep->dplpmtud.path), probe_size,
+		      "ACKed probe must raise the validated payload size");
+	zassert_equal(ep->max_tx_payload_size, probe_size,
+		      "TX payload size must follow the validated probe size");
+	zassert_true(net_dplpmtud_get_path_probe_size(&ep->dplpmtud.path) > 0,
+		     "A larger ceiling should keep probing enabled");
+}
+
+ZTEST(net_socket_quic, test_097_dplpmtud_probe_loss_retries_then_clamps)
+{
+	struct quic_endpoint *ep = &test_ep_a;
+	uint16_t probe_size = 1400U;
+
+	init_test_dplpmtud_endpoint(ep);
+	note_test_probe_sent(ep, probe_size);
+
+	quic_dplpmtud_on_probe_lost(ep, probe_size);
+
+	zassert_false(net_dplpmtud_path_probe_in_flight(&ep->dplpmtud.path),
+		      "Lost probe must leave the in-flight state");
+	zassert_true(net_dplpmtud_get_path_probe_size(&ep->dplpmtud.path) > 0,
+		     "Lost probe below retry limit must be retried");
+	zassert_equal(net_dplpmtud_get_path_probe_size(&ep->dplpmtud.path), probe_size,
+		      "Retry must keep the same probe size");
+
+	note_test_probe_sent(ep, probe_size);
+	quic_dplpmtud_on_probe_lost(ep, probe_size);
+	note_test_probe_sent(ep, probe_size);
+	quic_dplpmtud_on_probe_lost(ep, probe_size);
+
+	zassert_true(net_dplpmtud_get_path_probe_size(&ep->dplpmtud.path) < probe_size,
+		     "Exhausted probe retries must clamp the next probe size");
+	zassert_true(net_dplpmtud_get_path_probe_size(&ep->dplpmtud.path) > 0,
+		     "A smaller candidate should still be probed");
+}
+
+static void init_test_tx_ack_stream(struct quic_stream *stream,
+				    struct quic_endpoint *ep)
+{
+	memset(stream, 0, sizeof(*stream));
+
+	stream->id = 4;
+	stream->ep = ep;
+	stream->bytes_acked = 0;
+	stream->bytes_sent = 1000;
+	stream->tx_buf.base_offset = 0;
+	stream->tx_buf.len = 1000;
+	stream->acked_ooo_count = 0;
+	k_mutex_init(&stream->tx_lock);
+	k_poll_signal_init(&stream->send.signal);
+}
+
+#define TX_STRESS_APPEND_CHUNK 64U
+#define TX_STRESS_ITERATIONS 1000
+#define TX_STRESS_THREAD_STACK 2048
+
+static uint8_t tx_stress_pattern_byte(uint64_t offset)
+{
+	return (uint8_t)((offset * 131U + 7U) & 0xffU);
+}
+
+static void tx_stress_fill_range(struct quic_stream *stream, uint64_t offset, size_t len)
+{
+	struct quic_stream_tx_buffer *tx = &stream->tx_buf;
+	size_t buf_off = (size_t)(offset - tx->base_offset);
+
+	for (size_t i = 0; i < len; i++) {
+		tx->data[buf_off + i] = tx_stress_pattern_byte(offset + i);
+	}
+}
+
+static bool tx_stress_verify_buffer(struct quic_stream *stream)
+{
+	struct quic_stream_tx_buffer *tx;
+	bool ok = true;
+
+	k_mutex_lock(&stream->tx_lock, K_FOREVER);
+	tx = &stream->tx_buf;
+
+	if (tx->base_offset + tx->len > stream->bytes_sent) {
+		ok = false;
+		goto unlock;
+	}
+
+	if (stream->bytes_acked > stream->bytes_sent) {
+		ok = false;
+		goto unlock;
+	}
+
+	for (size_t i = 0; i < tx->len; i++) {
+		uint64_t offset = tx->base_offset + i;
+
+		if (tx->data[i] != tx_stress_pattern_byte(offset)) {
+			ok = false;
+			goto unlock;
+		}
+	}
+
+unlock:
+	k_mutex_unlock(&stream->tx_lock);
+
+	return ok;
+}
+
+static void tx_stress_ack_range(struct quic_stream *stream, uint32_t seed)
+{
+	uint64_t limit = stream->bytes_sent;
+	uint64_t start;
+	uint64_t end;
+
+	if (limit == 0U) {
+		return;
+	}
+
+	start = ((uint64_t)seed * 17U) % limit;
+	end = MIN(start + 1U + (((uint64_t)seed * 31U) % 200U), limit);
+
+	if (end > start) {
+		quic_stream_advance_tx_acked_for_stream(stream, start, end);
+	}
+}
+
+static atomic_t tx_stress_failed;
+
+static void tx_stress_ack_thread(void *p1, void *p2, void *p3)
+{
+	struct quic_stream *stream = p1;
+	uint32_t seed = (uint32_t)(uintptr_t)p2;
+
+	ARG_UNUSED(p3);
+
+	for (int n = 0; n < TX_STRESS_ITERATIONS; n++) {
+		if (atomic_get(&tx_stress_failed) != 0) {
+			break;
+		}
+
+		tx_stress_ack_range(stream, seed + (uint32_t)n);
+
+		if ((n % 50) == 0 && !tx_stress_verify_buffer(stream)) {
+			atomic_set(&tx_stress_failed, 1);
+			break;
+		}
+
+		k_yield();
+	}
+}
+
+static void tx_stress_append_thread(void *p1, void *p2, void *p3)
+{
+	struct quic_stream *stream = p1;
+
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	for (int n = 0; n < TX_STRESS_ITERATIONS; n++) {
+		struct quic_stream_tx_buffer *tx;
+
+		if (atomic_get(&tx_stress_failed) != 0) {
+			break;
+		}
+
+		k_mutex_lock(&stream->tx_lock, K_FOREVER);
+		tx = &stream->tx_buf;
+
+		if (tx->base_offset + tx->len + TX_STRESS_APPEND_CHUNK <= stream->bytes_sent &&
+		    tx->len + TX_STRESS_APPEND_CHUNK <= sizeof(tx->data)) {
+			uint64_t tail = tx->base_offset + tx->len;
+
+			for (size_t i = 0; i < TX_STRESS_APPEND_CHUNK; i++) {
+				tx->data[tx->len + i] = tx_stress_pattern_byte(tail + i);
+			}
+			tx->len += TX_STRESS_APPEND_CHUNK;
+		}
+
+		k_mutex_unlock(&stream->tx_lock);
+
+		if ((n % 50) == 0 && !tx_stress_verify_buffer(stream)) {
+			atomic_set(&tx_stress_failed, 1);
+			break;
+		}
+
+		k_yield();
+	}
+}
+
+static void tx_stress_rollback_thread(void *p1, void *p2, void *p3)
+{
+	struct quic_stream *stream = p1;
+
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	for (int n = 0; n < TX_STRESS_ITERATIONS; n++) {
+		struct quic_stream_tx_buffer *tx;
+		uint64_t this_offset;
+		size_t chunk = 32U;
+
+		if (atomic_get(&tx_stress_failed) != 0) {
+			break;
+		}
+
+		k_mutex_lock(&stream->tx_lock, K_FOREVER);
+		tx = &stream->tx_buf;
+		this_offset = stream->bytes_sent;
+
+		if (tx->base_offset + tx->len + chunk <= stream->remote_max_data &&
+		    tx->len + chunk <= sizeof(tx->data)) {
+			for (size_t i = 0; i < chunk; i++) {
+				tx->data[tx->len + i] =
+					tx_stress_pattern_byte(this_offset + i);
+			}
+			tx->len += chunk;
+		} else {
+			this_offset = UINT64_MAX;
+		}
+
+		k_mutex_unlock(&stream->tx_lock);
+
+		if (this_offset != UINT64_MAX) {
+			k_mutex_lock(&stream->tx_lock, K_FOREVER);
+			tx = &stream->tx_buf;
+
+			if (stream->bytes_sent == this_offset) {
+				size_t buf_off = (size_t)(this_offset - tx->base_offset);
+
+				if (buf_off < tx->len && buf_off + chunk <= tx->len) {
+					if (buf_off + chunk < tx->len) {
+						memmove(&tx->data[buf_off],
+							&tx->data[buf_off + chunk],
+							tx->len - buf_off - chunk);
+					}
+					tx->len -= chunk;
+				}
+			}
+
+			k_mutex_unlock(&stream->tx_lock);
+		}
+
+		if ((n % 50) == 0 && !tx_stress_verify_buffer(stream)) {
+			atomic_set(&tx_stress_failed, 1);
+			break;
+		}
+
+		k_yield();
+	}
+}
+
+static void init_test_tx_stress_stream(struct quic_stream *stream,
+				       struct quic_endpoint *ep,
+				       size_t initial_len,
+				       uint64_t bytes_sent)
+{
+	init_test_tx_ack_stream(stream, ep);
+
+	stream->bytes_sent = bytes_sent;
+	stream->remote_max_data = bytes_sent;
+	stream->tx_buf.len = initial_len;
+
+	k_mutex_lock(&stream->tx_lock, K_FOREVER);
+	tx_stress_fill_range(stream, stream->tx_buf.base_offset, initial_len);
+	k_mutex_unlock(&stream->tx_lock);
+}
+
+ZTEST(net_socket_quic, test_098_tx_ack_ooo_coalesce_and_advance)
+{
+	static struct quic_stream stream;
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+
+	init_test_tx_ack_stream(&stream, ep);
+
+	quic_stream_advance_tx_acked_for_stream(&stream, 100, 200);
+	zassert_equal(stream.acked_ooo_count, 1U, NULL);
+	zassert_equal(stream.bytes_acked, 0U, NULL);
+
+	quic_stream_advance_tx_acked_for_stream(&stream, 200, 300);
+	zassert_equal(stream.acked_ooo_count, 1U,
+		      "Adjacent OOO ACK ranges must coalesce");
+	zassert_equal(stream.acked_ooo[0].offset, 100U, NULL);
+	zassert_equal(stream.acked_ooo[0].len, 200U, NULL);
+
+	quic_stream_advance_tx_acked_for_stream(&stream, 0, 100);
+	zassert_equal(stream.bytes_acked, 300U, NULL);
+	zassert_equal(stream.acked_ooo_count, 0U, NULL);
+	zassert_equal(stream.tx_buf.len, 700U, "ACKed TX data must be released");
+	zassert_equal(stream.tx_buf.base_offset, 300U, NULL);
+}
+
+ZTEST(net_socket_quic, test_099_tx_ack_ooo_queue_full_still_advances)
+{
+	static struct quic_stream stream;
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	const uint64_t slot_size = 100U;
+	const int slot_count = CONFIG_QUIC_STREAM_OOO_SLOTS;
+
+	init_test_tx_ack_stream(&stream, ep);
+	stream.bytes_sent = (slot_count + 2U) * slot_size;
+	stream.tx_buf.len = stream.bytes_sent;
+
+	for (int i = 0; i < slot_count; i++) {
+		uint64_t start = ((i * 2U) + 1U) * slot_size;
+
+		quic_stream_advance_tx_acked_for_stream(&stream, start, start + slot_size);
+	}
+
+	zassert_equal(stream.acked_ooo_count, (uint8_t)slot_count,
+		      "Expected queue to be full of disjoint OOO ACK ranges");
+
+	quic_stream_advance_tx_acked_for_stream(&stream,
+						((slot_count * 2U) + 1U) * slot_size,
+						((slot_count * 2U) + 2U) * slot_size);
+	zassert_equal(stream.acked_ooo_count, (uint8_t)slot_count,
+		      "Queue-full OOO ACK must not abort processing");
+
+	quic_stream_advance_tx_acked_for_stream(&stream, 0, slot_size);
+	zassert_equal(stream.bytes_acked, slot_size * 2U,
+		      "In-order ACK must still advance contiguous frontier");
+	zassert_equal(stream.acked_ooo_count, (uint8_t)(slot_count - 1),
+		      "Bridged OOO ACK range must be consumed");
+}
+
+ZTEST(net_socket_quic, test_101_tx_lock_concurrent_advance_and_append)
+{
+	static struct quic_stream stream;
+	static struct k_thread ack_thread_data;
+	static struct k_thread append_thread_data;
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	const uint64_t bytes_sent = CONFIG_QUIC_STREAM_TX_BUFFER_SIZE;
+	k_tid_t ack_tid;
+	k_tid_t append_tid;
+	int ret;
+
+	static K_THREAD_STACK_DEFINE(ack_thread_stack, TX_STRESS_THREAD_STACK);
+	static K_THREAD_STACK_DEFINE(append_thread_stack, TX_STRESS_THREAD_STACK);
+
+	init_test_tx_stress_stream(&stream, ep, bytes_sent / 2U, bytes_sent);
+	atomic_set(&tx_stress_failed, 0);
+
+	ack_tid = k_thread_create(&ack_thread_data, ack_thread_stack,
+				  K_THREAD_STACK_SIZEOF(ack_thread_stack),
+				  tx_stress_ack_thread, &stream, (void *)1, NULL,
+				  K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+	append_tid = k_thread_create(&append_thread_data, append_thread_stack,
+				     K_THREAD_STACK_SIZEOF(append_thread_stack),
+				     tx_stress_append_thread, &stream, NULL, NULL,
+				     K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+
+	k_thread_start(ack_tid);
+	k_thread_start(append_tid);
+
+	ret = k_thread_join(ack_tid, K_MSEC(5000));
+	zassert_equal(ret, 0, "ACK stress thread did not finish (%d)", ret);
+	ret = k_thread_join(append_tid, K_MSEC(5000));
+	zassert_equal(ret, 0, "Append stress thread did not finish (%d)", ret);
+
+	zassert_equal(atomic_get(&tx_stress_failed), 0,
+		      "TX buffer pattern corrupted during concurrent ACK/append");
+	zassert_true(tx_stress_verify_buffer(&stream),
+		     "Final TX buffer state must remain consistent");
+}
+
+ZTEST(net_socket_quic, test_102_tx_lock_send_rollback_under_advance)
+{
+	static struct quic_stream stream;
+	static struct k_thread ack_thread_data;
+	static struct k_thread rollback_thread_data;
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	const uint64_t bytes_sent = CONFIG_QUIC_STREAM_TX_BUFFER_SIZE;
+	k_tid_t ack_tid;
+	k_tid_t rollback_tid;
+	int ret;
+
+	static K_THREAD_STACK_DEFINE(ack_thread_stack, TX_STRESS_THREAD_STACK);
+	static K_THREAD_STACK_DEFINE(rollback_thread_stack, TX_STRESS_THREAD_STACK);
+
+	init_test_tx_stress_stream(&stream, ep, bytes_sent / 4U, bytes_sent);
+	stream.bytes_sent = bytes_sent / 4U;
+	atomic_set(&tx_stress_failed, 0);
+
+	ack_tid = k_thread_create(&ack_thread_data, ack_thread_stack,
+				  K_THREAD_STACK_SIZEOF(ack_thread_stack),
+				  tx_stress_ack_thread, &stream, (void *)17, NULL,
+				  K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+	rollback_tid = k_thread_create(&rollback_thread_data, rollback_thread_stack,
+				       K_THREAD_STACK_SIZEOF(rollback_thread_stack),
+				       tx_stress_rollback_thread, &stream, NULL, NULL,
+				       K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+
+	k_thread_start(ack_tid);
+	k_thread_start(rollback_tid);
+
+	ret = k_thread_join(ack_tid, K_MSEC(5000));
+	zassert_equal(ret, 0, "ACK stress thread did not finish (%d)", ret);
+	ret = k_thread_join(rollback_tid, K_MSEC(5000));
+	zassert_equal(ret, 0, "Rollback stress thread did not finish (%d)", ret);
+
+	zassert_equal(atomic_get(&tx_stress_failed), 0,
+		      "TX buffer pattern corrupted during rollback stress");
+	zassert_true(tx_stress_verify_buffer(&stream),
+		     "Final TX buffer state must remain consistent after rollback stress");
 }
 
 static void init_test_crypto_endpoint(struct quic_endpoint *ep,
@@ -1985,6 +2734,41 @@ static int wait_for_pollin(struct config *data, struct zsock_pollfd *pfd)
 	return -ECANCELED;
 }
 
+static int quic_test_send_all(int sock, const uint8_t *buf, size_t len)
+{
+	size_t sent = 0;
+
+	while (sent < len) {
+		ssize_t ret = zsock_send(sock, buf + sent, len - sent, 0);
+
+		if (ret > 0) {
+			sent += ret;
+			continue;
+		}
+
+		if (ret == 0) {
+			return -EIO;
+		}
+
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			struct zsock_pollfd out = {
+				.fd = sock,
+				.events = ZSOCK_POLLOUT,
+			};
+
+			if (zsock_poll(&out, 1, POLL_TIMEOUT_MS) < 0) {
+				return -errno;
+			}
+
+			continue;
+		}
+
+		return -errno;
+	}
+
+	return 0;
+}
+
 static void server_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p2);
@@ -2066,6 +2850,8 @@ static void server_thread(void *p1, void *p2, void *p3)
 	pfd.revents = 0;
 
 	while (true) {
+		bool send_failed = false;
+
 		ret = wait_for_pollin(data, &pfd);
 		if (ret == -ECANCELED) {
 			break;
@@ -2089,14 +2875,45 @@ static void server_thread(void *p1, void *p2, void *p3)
 			break;
 		}
 
-		ret = zsock_send(stream, buf, len, 0);
+		ret = quic_test_send_all(stream, buf, len);
 		if (ret < 0) {
-			data->error = -errno;
+			data->error = ret;
 			LOG_DBG("Stream send failed (%d)", data->error);
+			send_failed = true;
 			break;
 		}
-	}
 
+		if (send_failed) {
+			break;
+		}
+
+		/* socket poll is edge-triggered; drain any data already queued so
+		 * a short read does not leave tail bytes waiting without a new edge.
+		 */
+		while (true) {
+			len = zsock_recv(stream, buf, sizeof(buf), ZSOCK_MSG_DONTWAIT);
+			if (len == 0) {
+				return;
+			}
+
+			if (len < 0) {
+				if (errno != EAGAIN && errno != EWOULDBLOCK) {
+					data->error = -errno;
+					LOG_DBG("Stream recv failed (%d)", data->error);
+					return;
+				}
+
+				break;
+			}
+
+			ret = quic_test_send_all(stream, buf, len);
+			if (ret < 0) {
+				data->error = ret;
+				LOG_DBG("Stream send failed (%d)", data->error);
+				return;
+			}
+		}
+	}
 }
 
 static void quic_server_and_client_with_stats(const char *server, const char *client,
@@ -2766,11 +3583,11 @@ static void server_uni_thread(void *p1, void *p2, void *p3)
 			break;
 		}
 
-		ret = zsock_send(stream_send_sock, buf, len, 0);
+		ret = quic_test_send_all(stream_send_sock, buf, len);
 		if (ret < 0) {
-			data->error = -errno;
+			data->error = ret;
 			LOG_DBG("Stream send failed (%d)", data->error);
-			break;
+			goto out;
 		}
 
 		k_msleep(10);
@@ -3714,6 +4531,372 @@ cleanup:
 	zassert_equal(ret, 0, "Failed to close server connection (%d)", ret);
 }
 
+static void quic_server_and_client_with_psk(const char *server, const char *client)
+{
+	struct net_sockaddr_storage server_addr;
+	struct net_sockaddr_storage client_addr;
+	sec_tag_t sec_tags[] = {
+		QUIC_EXTERNAL_PSK_TAG,
+	};
+	static const char * const alpn_list[] = {
+		"test-quic-psk",
+		NULL
+	};
+	static uint8_t tx_buf[] = "Hello with external PSK!";
+	static uint8_t rx_buf[64];
+	struct zsock_pollfd pfd;
+	int server_sock, client_sock, client_stream_sock = -1, server_stream_sock;
+	int server_connected_sock = -1;
+	k_tid_t tid;
+	int ret;
+
+#define SERVER_PSK_STACK_SIZE 2048
+	static K_THREAD_STACK_DEFINE(server_psk_thread_stack, SERVER_PSK_STACK_SIZE);
+	static struct k_thread server_psk_thread_data;
+	static struct config server_psk_data;
+
+	ret = k_sem_init(&server_psk_data.sem, 0, 1);
+	zassert_ok(ret, "Failed to initialize semaphore (%d)", ret);
+
+	ret = net_ipaddr_parse(server, strlen(server),
+			       (struct net_sockaddr *)&server_addr);
+	zassert_true(ret, "Failed to parse server IP address %s", server);
+
+	ret = net_ipaddr_parse(client, strlen(client),
+			       (struct net_sockaddr *)&client_addr);
+	zassert_true(ret, "Failed to parse client IP address %s", client);
+
+	prepare_quic_socket(&server_sock, NULL,
+			    (const struct net_sockaddr *)&server_addr);
+	prepare_quic_socket(&client_sock,
+			    (const struct net_sockaddr *)&server_addr,
+			    (const struct net_sockaddr *)&client_addr);
+
+	zassert_true(server_sock >= 0, "Failed to create server socket");
+	zassert_true(client_sock >= 0, "Failed to create client socket");
+
+	setup_quic_certs(server_sock, sec_tags, ARRAY_SIZE(sec_tags));
+	setup_alpn(server_sock, alpn_list, ARRAY_SIZE(alpn_list));
+
+	server_psk_data.sock = server_sock;
+	server_psk_data.counter = 1;
+	server_psk_data.error = 0;
+	server_psk_data.connected_sock = -1;
+	server_psk_data.stream_recv_sock = -1;
+	server_psk_data.test_done = false;
+
+	tid = k_thread_create(&server_psk_thread_data, server_psk_thread_stack,
+			      K_THREAD_STACK_SIZEOF(server_psk_thread_stack),
+			      server_thread, &server_psk_data, NULL, NULL,
+			      K_PRIO_PREEMPT(1), 0, K_FOREVER);
+
+	if (IS_ENABLED(CONFIG_THREAD_NAME)) {
+		k_thread_name_set(&server_psk_thread_data, "quic_srv_psk");
+	}
+
+	k_thread_start(tid);
+
+	ret = k_sem_take(&server_psk_data.sem, K_FOREVER);
+	zassert_ok(ret, "Failed to take semaphore (%d)", ret);
+
+	setup_quic_certs(client_sock, sec_tags, ARRAY_SIZE(sec_tags));
+	setup_alpn(client_sock, alpn_list, ARRAY_SIZE(alpn_list));
+
+	client_stream_sock = quic_stream_open(client_sock, QUIC_STREAM_CLIENT,
+					      QUIC_STREAM_BIDIRECTIONAL, 0);
+	zassert_true(client_stream_sock >= 0, "Failed to open client stream (%d)",
+		     client_stream_sock);
+
+	ret = zsock_send(client_stream_sock, tx_buf, sizeof(tx_buf), 0);
+	zassert_equal(ret, sizeof(tx_buf), "Failed to send data (%d)", -errno);
+
+	pfd.fd = client_stream_sock;
+	pfd.events = ZSOCK_POLLIN;
+	pfd.revents = 0;
+
+	ret = zsock_poll(&pfd, 1, SYS_FOREVER_MS);
+	zassert_true(ret >= 0, "Poll failed (%d)", -errno);
+
+	ret = zsock_recv(client_stream_sock, rx_buf, sizeof(rx_buf), 0);
+	zassert_true(ret > 0, "Failed to receive data (%d)", -errno);
+	zassert_mem_equal(tx_buf, rx_buf, sizeof(tx_buf), "Received PSK echo mismatch");
+
+	server_psk_data.test_done = true;
+
+	if (client_stream_sock >= 0) {
+		ret = zsock_close(client_stream_sock);
+		zassert_equal(ret, 0, "Failed to close client stream (%d)", ret);
+	}
+
+	ret = k_thread_join(&server_psk_thread_data, K_MSEC(500));
+	zassert_equal(ret, 0, "Cannot join thread (%d)", ret);
+
+	zassert_equal(server_psk_data.error, 0, "Server thread reported error (%d)",
+		      server_psk_data.error);
+
+	server_stream_sock = server_psk_data.stream_recv_sock;
+	zassert_true(server_stream_sock >= 0, "Invalid server stream socket (%d)",
+		     server_stream_sock);
+
+	ret = quic_stream_close(server_stream_sock);
+	zassert_equal(ret, 0, "Failed to close server stream %d (%d)",
+		      server_stream_sock, ret);
+
+	server_connected_sock = server_psk_data.connected_sock;
+	zassert_true(server_connected_sock >= 0, "Invalid connected socket (%d)",
+		     server_connected_sock);
+
+	ret = quic_connection_close(server_connected_sock);
+	zassert_equal(ret, 0, "Failed to close server connection %d (%d)",
+		      server_connected_sock, ret);
+
+	ret = quic_connection_close(client_sock);
+	zassert_equal(ret, 0, "Failed to close client connection (%d)", ret);
+
+	ret = quic_connection_close(server_sock);
+	zassert_equal(ret, 0, "Failed to close server connection (%d)", ret);
+}
+
+static void quic_server_and_client_with_session_resumption(const char *server, const char *client,
+							   uint32_t ticket_early_data_size)
+{
+	struct net_sockaddr_storage server_addr;
+	struct net_sockaddr_storage client_addr;
+	sec_tag_t server_sec_tags[] = {
+		SERVER_CERTIFICATE_TAG,
+	};
+	sec_tag_t client_sec_tags[] = {
+		CA_CERTIFICATE_TAG,
+	};
+	static const char * const alpn_list[] = {
+		"test-quic-ticket",
+		NULL
+	};
+	static uint8_t tx_buf[] = "Hello with session resumption!";
+	static uint8_t rx_buf[96];
+	struct quic_session_state session_state = { 0 };
+	struct zsock_pollfd pfd;
+	int server_sock = -1, client_sock = -1, client_stream_sock = -1;
+	int server_connected_sock = -1, server_stream_sock = -1;
+	int enable_session_tickets = 1;
+	int ret;
+	net_socklen_t optlen;
+	k_tid_t tid;
+
+#define SERVER_TICKET_STACK_SIZE 2048
+	static K_THREAD_STACK_DEFINE(server_ticket_thread_stack, SERVER_TICKET_STACK_SIZE);
+	static struct k_thread server_ticket_thread_data;
+	static struct config server_ticket_data;
+	uint32_t expected_early_data_size;
+
+	ret = k_sem_init(&server_ticket_data.sem, 0, 1);
+	zassert_ok(ret, "Failed to initialize semaphore (%d)", ret);
+
+	ret = net_ipaddr_parse(server, strlen(server),
+			       (struct net_sockaddr *)&server_addr);
+	zassert_true(ret, "Failed to parse server IP address %s", server);
+
+	ret = net_ipaddr_parse(client, strlen(client),
+			       (struct net_sockaddr *)&client_addr);
+	zassert_true(ret, "Failed to parse client IP address %s", client);
+
+	prepare_quic_socket(&server_sock, NULL,
+			    (const struct net_sockaddr *)&server_addr);
+	prepare_quic_socket(&client_sock,
+			    (const struct net_sockaddr *)&server_addr,
+			    (const struct net_sockaddr *)&client_addr);
+
+	zassert_true(server_sock >= 0, "Failed to create server socket");
+	zassert_true(client_sock >= 0, "Failed to create client socket");
+
+	ret = zsock_setsockopt(server_sock, ZSOCK_SOL_QUIC,
+			       ZSOCK_QUIC_SO_SESSION_TICKET_ENABLE,
+			       &enable_session_tickets,
+			       sizeof(enable_session_tickets));
+	zassert_equal(ret, 0, "Failed to enable session tickets (%d)", -errno);
+
+	ret = zsock_setsockopt(server_sock, ZSOCK_SOL_QUIC,
+			       ZSOCK_QUIC_SO_MAX_EARLY_DATA_SIZE,
+			       &ticket_early_data_size,
+			       sizeof(ticket_early_data_size));
+	if (IS_ENABLED(CONFIG_QUIC_0RTT) || ticket_early_data_size == 0U) {
+		zassert_equal(ret, 0, "Failed to set ticket early-data size (%d)", -errno);
+	} else {
+		zassert_equal(ret, -1, "Expected non-zero 0-RTT policy to be rejected");
+		zassert_equal(errno, ENOTSUP, "Expected ENOTSUP, got %d", errno);
+	}
+
+	setup_quic_certs(server_sock, server_sec_tags, ARRAY_SIZE(server_sec_tags));
+	setup_quic_certs(client_sock, client_sec_tags, ARRAY_SIZE(client_sec_tags));
+	setup_alpn(server_sock, alpn_list, ARRAY_SIZE(alpn_list));
+	setup_alpn(client_sock, alpn_list, ARRAY_SIZE(alpn_list));
+
+	server_ticket_data.sock = server_sock;
+	server_ticket_data.counter = 1;
+	server_ticket_data.error = 0;
+	server_ticket_data.connected_sock = -1;
+	server_ticket_data.stream_recv_sock = -1;
+	server_ticket_data.test_done = false;
+
+	tid = k_thread_create(&server_ticket_thread_data, server_ticket_thread_stack,
+			      K_THREAD_STACK_SIZEOF(server_ticket_thread_stack),
+			      server_thread, &server_ticket_data, NULL, NULL,
+			      K_PRIO_PREEMPT(1), 0, K_FOREVER);
+
+	if (IS_ENABLED(CONFIG_THREAD_NAME)) {
+		k_thread_name_set(&server_ticket_thread_data, "quic_ticket_srv");
+	}
+
+	k_thread_start(tid);
+
+	ret = k_sem_take(&server_ticket_data.sem, K_FOREVER);
+	zassert_ok(ret, "Failed to take semaphore (%d)", ret);
+
+	client_stream_sock = quic_stream_open(client_sock, QUIC_STREAM_CLIENT,
+					      QUIC_STREAM_BIDIRECTIONAL, 0);
+	zassert_true(client_stream_sock >= 0, "Failed to open client stream (%d)",
+		     client_stream_sock);
+
+	ret = zsock_send(client_stream_sock, tx_buf, sizeof(tx_buf), 0);
+	zassert_equal(ret, sizeof(tx_buf), "Failed to send data (%d)", -errno);
+
+	pfd.fd = client_stream_sock;
+	pfd.events = ZSOCK_POLLIN;
+	pfd.revents = 0;
+
+	ret = zsock_poll(&pfd, 1, SYS_FOREVER_MS);
+	zassert_true(ret >= 0, "Poll failed (%d)", -errno);
+
+	ret = zsock_recv(client_stream_sock, rx_buf, sizeof(rx_buf), 0);
+	zassert_true(ret > 0, "Failed to receive data (%d)", -errno);
+	zassert_mem_equal(tx_buf, rx_buf, sizeof(tx_buf), "Received ticket echo mismatch");
+
+	for (int attempt = 0; attempt < 50; attempt++) {
+		optlen = sizeof(session_state);
+		ret = zsock_getsockopt(client_sock, ZSOCK_SOL_QUIC,
+				       ZSOCK_QUIC_SO_SESSION_STATE,
+				       &session_state, &optlen);
+		if (ret == 0) {
+			break;
+		}
+
+		k_sleep(K_MSEC(20));
+	}
+
+	zassert_equal(ret, 0, "Failed to export session state (%d)", -errno);
+	zassert_equal(optlen, sizeof(session_state), "Unexpected session state size %u",
+		      optlen);
+	zassert_equal(session_state.version, QUIC_SESSION_STATE_VERSION,
+		      "Unexpected session state version %u", session_state.version);
+	zassert_true(session_state.ticket_len > 0U, "Expected a non-empty session ticket");
+	zassert_true(session_state.psk_len > 0U, "Expected a non-empty resumption PSK");
+	/* RFC 9001 4.6.1: QUIC advertises the fixed 0xffffffff sentinel in the
+	 * ticket, so a resumable 0-RTT state remembers that value (not the
+	 * server's byte cap); the real limit comes from transport parameters.
+	 */
+	expected_early_data_size = (IS_ENABLED(CONFIG_QUIC_0RTT) && ticket_early_data_size > 0U) ?
+		UINT32_MAX : 0U;
+	zassert_equal(session_state.max_early_data_size, expected_early_data_size,
+		      "Unexpected remembered early-data size %" PRIu32,
+		      session_state.max_early_data_size);
+	zassert_true(session_state.transport_params.valid,
+		     "Expected remembered transport parameters in session state");
+	zassert_equal(session_state.transport_params.initial_max_data,
+		      CONFIG_QUIC_INITIAL_MAX_DATA,
+		      "Unexpected remembered initial_max_data");
+	zassert_equal(session_state.transport_params.initial_max_stream_data_bidi_local,
+		      CONFIG_QUIC_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL,
+		      "Unexpected remembered bidi_local stream data limit");
+	zassert_equal(session_state.transport_params.initial_max_stream_data_bidi_remote,
+		      CONFIG_QUIC_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE,
+		      "Unexpected remembered bidi_remote stream data limit");
+	zassert_equal(session_state.transport_params.initial_max_stream_data_uni,
+		      CONFIG_QUIC_INITIAL_MAX_STREAM_DATA_UNI,
+		      "Unexpected remembered uni stream data limit");
+	zassert_equal(session_state.transport_params.initial_max_streams_bidi,
+		      CONFIG_QUIC_INITIAL_MAX_STREAMS_BIDI,
+		      "Unexpected remembered bidi stream count limit");
+	zassert_equal(session_state.transport_params.initial_max_streams_uni,
+		      CONFIG_QUIC_INITIAL_MAX_STREAMS_UNI,
+		      "Unexpected remembered uni stream count limit");
+
+	server_ticket_data.test_done = true;
+
+	ret = zsock_close(client_stream_sock);
+	zassert_equal(ret, 0, "Failed to close client stream (%d)", ret);
+	client_stream_sock = -1;
+
+	ret = k_thread_join(&server_ticket_thread_data, K_MSEC(500));
+	zassert_equal(ret, 0, "Cannot join thread (%d)", ret);
+
+	zassert_equal(server_ticket_data.error, 0, "Server thread reported error (%d)",
+		      server_ticket_data.error);
+
+	server_stream_sock = server_ticket_data.stream_recv_sock;
+	server_connected_sock = server_ticket_data.connected_sock;
+
+	zassert_true(server_stream_sock >= 0, "Invalid server stream socket (%d)",
+		     server_stream_sock);
+	zassert_true(server_connected_sock >= 0, "Invalid connected socket (%d)",
+		     server_connected_sock);
+
+	ret = quic_stream_close(server_stream_sock);
+	zassert_equal(ret, 0, "Failed to close server stream %d (%d)",
+		      server_stream_sock, ret);
+
+	ret = quic_connection_close(server_connected_sock);
+	zassert_equal(ret, 0, "Failed to close server connection %d (%d)",
+		      server_connected_sock, ret);
+
+	ret = quic_connection_close(client_sock);
+	zassert_equal(ret, 0, "Failed to close client connection (%d)", ret);
+	client_sock = -1;
+
+	if (server_addr.ss_family == NET_AF_INET) {
+		struct net_sockaddr_in *addr = net_sin((struct net_sockaddr *)&client_addr);
+
+		addr->sin_port = net_htons(net_ntohs(addr->sin_port) + 1U);
+	} else {
+		struct net_sockaddr_in6 *addr = net_sin6((struct net_sockaddr *)&client_addr);
+
+		addr->sin6_port = net_htons(net_ntohs(addr->sin6_port) + 1U);
+	}
+
+	prepare_quic_socket(&client_sock,
+			    (const struct net_sockaddr *)&server_addr,
+			    (const struct net_sockaddr *)&client_addr);
+
+	zassert_true(client_sock >= 0, "Failed to create resumed client socket");
+
+	setup_alpn(client_sock, alpn_list, ARRAY_SIZE(alpn_list));
+	setup_quic_certs(client_sock, client_sec_tags, ARRAY_SIZE(client_sec_tags));
+
+	ret = zsock_setsockopt(client_sock, ZSOCK_SOL_QUIC,
+			       ZSOCK_QUIC_SO_SESSION_STATE,
+			       &session_state, sizeof(session_state));
+	zassert_equal(ret, 0, "Failed to import session state (%d)", -errno);
+
+	{
+		struct quic_session_state imported_state = { 0 };
+
+		optlen = sizeof(imported_state);
+		ret = zsock_getsockopt(client_sock, ZSOCK_SOL_QUIC,
+				       ZSOCK_QUIC_SO_SESSION_STATE,
+				       &imported_state, &optlen);
+		zassert_equal(ret, 0, "Failed to read imported session state (%d)", -errno);
+		zassert_equal(optlen, sizeof(imported_state),
+			      "Unexpected imported session state size %u", optlen);
+		zassert_mem_equal(&session_state, &imported_state, sizeof(session_state),
+				  "Imported session state mismatch");
+	}
+
+	ret = quic_connection_close(client_sock);
+	zassert_equal(ret, 0, "Failed to close resumed client connection (%d)", ret);
+
+	ret = quic_connection_close(server_sock);
+	zassert_equal(ret, 0, "Failed to close server connection (%d)", ret);
+}
+
 ZTEST(net_socket_quic, test_410_client_cert_optional)
 {
 	int ret;
@@ -3823,6 +5006,187 @@ ZTEST(net_socket_quic, test_460_required_peer_verification_rejects_finished_with
 		      ret);
 	zassert_not_equal(ctx.state, QUIC_TLS_STATE_CONNECTED,
 			  "Handshake must not reach CONNECTED without peer certificate");
+}
+
+/* RFC 9001 6: the TLS KeyUpdate message is prohibited in QUIC and must be
+ * rejected as a protocol violation, not silently ignored.
+ */
+ZTEST(net_socket_quic, test_461_tls_keyupdate_is_rejected)
+{
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	struct quic_tls_context ctx = { 0 };
+	static const uint8_t body[] = { 0x00 }; /* update_not_requested */
+	static const uint8_t full_msg[] = { TLS_HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x00 };
+	int ret;
+
+	ep->is_server = true;
+	ctx.ep = ep;
+
+	ret = process_handshake_message(&ctx, TLS_HS_KEY_UPDATE,
+					body, sizeof(body), full_msg, sizeof(full_msg));
+	zassert_equal(ret, -EPROTO,
+		      "TLS KeyUpdate must be rejected with -EPROTO (%d)", ret);
+}
+
+ZTEST(net_socket_quic, test_465_external_psk_handshake_can_exchange_data)
+{
+	int ret;
+
+	Z_TEST_SKIP_IFNDEF(MBEDTLS_SSL_HANDSHAKE_WITH_PSK_ENABLED);
+
+	ret = loopback_set_packet_drop_ratio(0.0);
+	zassert_ok(ret, "Failed to set packet drop ratio (%d)", ret);
+
+	quic_server_and_client_with_psk(LOCAL_ADDR_IPV4_STR3, REMOTE_ADDR_IPV4_STR3);
+}
+
+ZTEST(net_socket_quic, test_466_session_ticket_resumption_round_trips_0rtt_policy)
+{
+	int ret;
+
+	ret = loopback_set_packet_drop_ratio(0.0);
+	zassert_ok(ret, "Failed to set packet drop ratio (%d)", ret);
+
+	quic_server_and_client_with_session_resumption(LOCAL_ADDR_IPV4_STR3,
+							 REMOTE_ADDR_IPV4_STR3,
+							 4096U);
+}
+
+ZTEST(net_socket_quic, test_467_session_ticket_resumption_round_trips_disabled_0rtt_policy)
+{
+	int ret;
+
+	ret = loopback_set_packet_drop_ratio(0.0);
+	zassert_ok(ret, "Failed to set packet drop ratio (%d)", ret);
+
+	quic_server_and_client_with_session_resumption(LOCAL_ADDR_IPV4_STR3,
+							 REMOTE_ADDR_IPV4_STR3,
+							 0U);
+}
+
+ZTEST(net_socket_quic, test_468_resumed_transport_params_reject_lower_early_data_limits)
+{
+	static const uint8_t original_dcid[] = {
+		0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+	};
+	static const uint8_t initial_scid[] = {
+		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+	};
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	size_t pos = 0;
+	int ret;
+
+	ep->is_server = false;
+	ep->crypto.tls.is_initialized = true;
+	ep->crypto.tls.session_state_valid = true;
+	ep->crypto.tls.early_data_accepted = true;
+	ep->crypto.tls.session_state.transport_params.valid = true;
+	ep->crypto.tls.session_state.transport_params.initial_max_data = 4096U;
+	ep->crypto.tls.session_state.transport_params.initial_max_stream_data_bidi_local = 2048U;
+	ep->crypto.tls.session_state.transport_params.initial_max_stream_data_bidi_remote = 2048U;
+	ep->crypto.tls.session_state.transport_params.initial_max_stream_data_uni = 1024U;
+	ep->crypto.tls.session_state.transport_params.initial_max_streams_bidi = 4U;
+	ep->crypto.tls.session_state.transport_params.initial_max_streams_uni = 4U;
+	ep->token.client_initial_dcid_len = sizeof(original_dcid);
+	memcpy(ep->token.client_initial_dcid, original_dcid, sizeof(original_dcid));
+	ep->peer_cid_len = sizeof(initial_scid);
+	memcpy(ep->peer_cid, initial_scid, sizeof(initial_scid));
+
+	pos += append_cid_transport_param(&ep->crypto.tls.peer_tp[pos],
+					  sizeof(ep->crypto.tls.peer_tp) - pos,
+					  QUIC_ORIGINAL_DESTINATION_CONNECTION_ID,
+					  original_dcid, sizeof(original_dcid));
+	pos += append_cid_transport_param(&ep->crypto.tls.peer_tp[pos],
+					  sizeof(ep->crypto.tls.peer_tp) - pos,
+					  QUIC_INITIAL_SOURCE_CONNECTION_ID,
+					  initial_scid, sizeof(initial_scid));
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_DATA, 2048U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL, 2048U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE, 2048U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAM_DATA_UNI, 1024U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAMS_BIDI, 4U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAMS_UNI, 4U);
+	ep->crypto.tls.peer_tp_len = pos;
+
+	ret = parse_peer_transport_params(ep);
+	zassert_equal(ret, -EPROTO,
+		      "Lower resumed early-data transport params must fail (%d)", ret);
+}
+
+ZTEST(net_socket_quic, test_469_resumed_transport_params_accept_equal_or_larger_limits)
+{
+	static const uint8_t original_dcid[] = {
+		0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+	};
+	static const uint8_t initial_scid[] = {
+		0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+	};
+	struct quic_endpoint *ep = reset_test_ep(&test_ep_a);
+	size_t pos = 0;
+	int ret;
+
+	ep->is_server = false;
+	ep->crypto.tls.is_initialized = true;
+	ep->crypto.tls.session_state_valid = true;
+	ep->crypto.tls.early_data_accepted = true;
+	ep->crypto.tls.session_state.transport_params.valid = true;
+	ep->crypto.tls.session_state.transport_params.initial_max_data = 2048U;
+	ep->crypto.tls.session_state.transport_params.initial_max_stream_data_bidi_local = 1024U;
+	ep->crypto.tls.session_state.transport_params.initial_max_stream_data_bidi_remote = 1024U;
+	ep->crypto.tls.session_state.transport_params.initial_max_stream_data_uni = 512U;
+	ep->crypto.tls.session_state.transport_params.initial_max_streams_bidi = 2U;
+	ep->crypto.tls.session_state.transport_params.initial_max_streams_uni = 2U;
+	ep->token.client_initial_dcid_len = sizeof(original_dcid);
+	memcpy(ep->token.client_initial_dcid, original_dcid, sizeof(original_dcid));
+	ep->peer_cid_len = sizeof(initial_scid);
+	memcpy(ep->peer_cid, initial_scid, sizeof(initial_scid));
+
+	pos += append_cid_transport_param(&ep->crypto.tls.peer_tp[pos],
+					  sizeof(ep->crypto.tls.peer_tp) - pos,
+					  QUIC_ORIGINAL_DESTINATION_CONNECTION_ID,
+					  original_dcid, sizeof(original_dcid));
+	pos += append_cid_transport_param(&ep->crypto.tls.peer_tp[pos],
+					  sizeof(ep->crypto.tls.peer_tp) - pos,
+					  QUIC_INITIAL_SOURCE_CONNECTION_ID,
+					  initial_scid, sizeof(initial_scid));
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_DATA, 4096U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL, 1024U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE, 2048U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAM_DATA_UNI, 1024U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAMS_BIDI, 3U);
+	pos += append_varint_transport_param(&ep->crypto.tls.peer_tp[pos],
+					     sizeof(ep->crypto.tls.peer_tp) - pos,
+					     QUIC_INITIAL_MAX_STREAMS_UNI, 4U);
+	ep->crypto.tls.peer_tp_len = pos;
+
+	ret = parse_peer_transport_params(ep);
+	zassert_ok(ret, "Equal or larger resumed early-data transport params must pass (%d)",
+		   ret);
+	zassert_true(ep->peer_params.parsed, "Peer transport params should be marked parsed");
+	zassert_equal(ep->tx_fc.max_data, 4096U,
+		      "Expected parsed initial_max_data to update connection flow control");
 }
 
 #define LOCAL_ADDR_IPV4_STR4 "127.0.0.1:54324"

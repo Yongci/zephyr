@@ -19,6 +19,7 @@
 		zephyr,code-partition = &slot0_partition;
 
 		zephyr,bt-hci = &hci_spi;
+		zephyr,system-timer = &lptim1;
 	};
 
 	leds {
@@ -137,7 +138,7 @@
 	};
 };
 
-stm32_lp_tick_source: &lptim1 {
+&lptim1 {
 	clocks = <&rcc STM32_CLOCK(APB3, 11)>,
 		 <&rcc STM32_SRC_LSE LPTIM1_SEL(3)>;
 	status = "okay";
@@ -205,6 +206,8 @@ stm32_lp_tick_source: &lptim1 {
 &i2c2 {
 	pinctrl-0 = <&i2c2_scl_ph4 &i2c2_sda_pf0>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpioh 4 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiof 0 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_FAST>;
 

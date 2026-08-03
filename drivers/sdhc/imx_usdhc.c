@@ -16,6 +16,7 @@
 #include <zephyr/logging/log.h>
 #include <soc.h>
 #include <zephyr/drivers/pinctrl.h>
+#include "sdhc_helpers.h"
 #define PINCTRL_STATE_SLOW   PINCTRL_STATE_PRIV_START
 #define PINCTRL_STATE_MED    (PINCTRL_STATE_PRIV_START + 1U)
 #define PINCTRL_STATE_FAST   (PINCTRL_STATE_PRIV_START + 2U)
@@ -270,11 +271,13 @@ static void imx_usdhc_init_host_props(const struct device *dev)
 	props->power_delay = cfg->power_delay_ms;
 	/* Read host capabilities */
 	USDHC_GetCapability(base, &caps);
+#if !(defined(FSL_FEATURE_USDHC_HAS_NO_VS18) && FSL_FEATURE_USDHC_HAS_NO_VS18)
 	if (cfg->no_180_vol) {
 		props->host_caps.vol_180_support = false;
 	} else {
 		props->host_caps.vol_180_support = (bool)(caps.flags & kUSDHC_SupportV180Flag);
 	}
+#endif
 	if (cfg->no_300_vol) {
 		props->host_caps.vol_300_support = false;
 	} else {
@@ -344,9 +347,9 @@ static int imx_usdhc_set_io(const struct device *dev, struct sdhc_io *ios)
 	struct sdhc_io *host_io = &data->host_io;
 	USDHC_Type *base = get_base(dev);
 
-	LOG_DBG("SDHC I/O: bus width %d, clock %dHz, card power %s, voltage %s", ios->bus_width,
-		ios->clock, ios->power_mode == SDHC_POWER_ON ? "ON" : "OFF",
-		ios->signal_voltage == SD_VOL_1_8_V ? "1.8V" : "3.3V");
+	LOG_DBG("SDHC I/O: bus width %d, clock %dHz, card power %s, timing %s, voltage %s",
+		ios->bus_width, ios->clock, ios->power_mode == SDHC_POWER_ON ? "ON" : "OFF",
+		sdhc_timing_mode_str(ios->timing), sd_voltage_str(ios->signal_voltage));
 
 	if (clock_control_get_rate(cfg->clock_dev, cfg->clock_subsys, &src_clk_hz)) {
 		return -EINVAL;
@@ -1219,16 +1222,10 @@ static DEVICE_API(sdhc, usdhc_api) = {
 	.disable_interrupt = imx_usdhc_disable_interrupt,
 };
 
-#ifdef CONFIG_NOCACHE_MEMORY
-#define IMX_USDHC_NOCACHE_TAG __attribute__((__section__(".nocache")));
-#else
-#define IMX_USDHC_NOCACHE_TAG
-#endif
-
 #ifdef CONFIG_IMX_USDHC_DMA_SUPPORT
 #define IMX_USDHC_DMA_BUFFER_DEFINE(n)                                                             \
 	static uint32_t __aligned(32)                                                              \
-	usdhc_##n##_dma_descriptor[CONFIG_IMX_USDHC_DMA_BUFFER_SIZE / 4] IMX_USDHC_NOCACHE_TAG;
+	usdhc_##n##_dma_descriptor[CONFIG_IMX_USDHC_DMA_BUFFER_SIZE / 4] __nocache;
 #define IMX_USDHC_DMA_BUFFER_INIT(n)                                                               \
 	.usdhc_dma_descriptor = usdhc_##n##_dma_descriptor,                                        \
 	.dma_descriptor_len = CONFIG_IMX_USDHC_DMA_BUFFER_SIZE / 4,

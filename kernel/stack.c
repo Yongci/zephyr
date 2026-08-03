@@ -13,6 +13,7 @@
 
 #include <zephyr/toolchain.h>
 #include <ksched.h>
+#include <scheduler.h>
 #include <wait_q.h>
 #include <zephyr/sys/check.h>
 #include <zephyr/init.h>
@@ -99,7 +100,6 @@ int k_stack_cleanup(struct k_stack *stack)
 
 int z_impl_k_stack_push(struct k_stack *stack, stack_data_t data)
 {
-	struct k_thread *first_pending_thread;
 	int ret = 0;
 	k_spinlock_key_t key = k_spin_lock(&stack->lock);
 
@@ -110,13 +110,7 @@ int z_impl_k_stack_push(struct k_stack *stack, stack_data_t data)
 		goto out;
 	}
 
-	first_pending_thread = z_unpend_first_thread(&stack->wait_q);
-
-	if (unlikely(first_pending_thread != NULL)) {
-		z_thread_return_value_set_with_data(first_pending_thread,
-						   0, (void *)data);
-
-		z_ready_thread(first_pending_thread);
+	if (z_sched_wake(&stack->wait_q, 0, (void *)data)) {
 		z_reschedule(&stack->lock, key);
 		goto end;
 	} else {
@@ -200,22 +194,5 @@ static inline int z_vrfy_k_stack_pop(struct k_stack *stack,
 #endif /* CONFIG_USERSPACE */
 
 #ifdef CONFIG_OBJ_CORE_STACK
-static int init_stack_obj_core_list(void)
-{
-	/* Initialize stack object type */
-
-	z_obj_type_init(&obj_type_stack, K_OBJ_TYPE_STACK_ID,
-			offsetof(struct k_stack, obj_core));
-
-	/* Initialize and link statically defined stacks */
-
-	STRUCT_SECTION_FOREACH(k_stack, stack) {
-		k_obj_core_init_and_link(K_OBJ_CORE(stack), &obj_type_stack);
-	}
-
-	return 0;
-}
-
-SYS_INIT(init_stack_obj_core_list, PRE_KERNEL_1,
-	 CONFIG_KERNEL_INIT_PRIORITY_OBJECTS);
+K_OBJ_TYPE_DEFINE(obj_type_stack, k_stack, K_OBJ_TYPE_STACK_ID, NULL);
 #endif /* CONFIG_OBJ_CORE_STACK */

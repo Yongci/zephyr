@@ -13,7 +13,7 @@
 #include <zephyr/audio/dmic.h>
 #include <zephyr/ztest.h>
 
-static const struct device *dmic_dev = DEVICE_DT_GET(DT_ALIAS(dmic_dev));
+static const struct device *dmic_dev = DEVICE_DT_GET(DT_ALIAS(dmic0));
 
 #define SAMPLE_BIT_WIDTH CONFIG_SAMPLE_BIT_WIDTH
 #define PDM_CHANNELS     CONFIG_SAMPLE_PDM_CHANNELS
@@ -80,7 +80,7 @@ static int do_pdm_transfer(const struct device *dmic,
 {
 	int ret;
 	void *buffer;
-	uint32_t size;
+	size_t size;
 
 	TC_PRINT("PCM output rate: %u, channels: %u\n",
 		 cfg->streams[0].pcm_rate, cfg->channel.req_num_chan);
@@ -200,7 +200,7 @@ ZTEST(dmic, test_pause_restart)
 {
 	int ret, i;
 	void *buffer;
-	uint32_t size;
+	size_t size;
 
 	dmic_cfg.channel.req_num_chan = 1;
 	dmic_cfg.channel.req_chan_map_lo =

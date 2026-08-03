@@ -58,6 +58,7 @@ struct ifx_cat1_event_callback_data {
 
 struct ifx_cat1_i2c_data {
 	cy_stc_scb_i2c_context_t context;
+	cy_stc_scb_i2c_config_t scb_config;
 	uint16_t pending;
 	uint32_t irq_cause;
 	cy_stc_scb_i2c_master_xfer_config_t rx_config;
@@ -90,14 +91,18 @@ struct ifx_cat1_i2c_config {
 	en_clk_dst_t clk_dst;
 	void (*irq_config_func)(const struct device *dev);
 	cy_cb_scb_i2c_handle_events_t i2c_handle_events_func;
+	k_timeout_t transfer_timeout;
 #ifdef CONFIG_I2C_INFINEON_BUS_RECOVERY
 	struct gpio_dt_spec scl;
 	struct gpio_dt_spec sda;
 #endif /* CONFIG_I2C_INFINEON_BUS_RECOVERY */
 };
 
-/* Default SCB/I2C configuration structure */
-static cy_stc_scb_i2c_config_t _i2c_default_config = {
+/* Default SCB/I2C configuration template (read-only). Each device instance
+ * keeps its own mutable copy in struct ifx_cat1_i2c_data::scb_config so that
+ * concurrent I2C instances cannot corrupt each other's configuration.
+ */
+static const cy_stc_scb_i2c_config_t _i2c_default_config = {
 	.i2cMode = CY_SCB_I2C_MASTER,
 	.useRxFifo = false,
 	.useTxFifo = true,
@@ -226,11 +231,30 @@ static void ifx_cat1_i2c_event_handler(void *callback_arg, uint32_t event)
 {
 	const struct device *dev = (const struct device *)callback_arg;
 	struct ifx_cat1_i2c_data *data = dev->data;
+	const struct ifx_cat1_i2c_config *const config = dev->config;
 
 	if (((CY_SCB_I2C_MASTER_ERR_EVENT | CY_SCB_I2C_SLAVE_ERR_EVENT) & event) != 0) {
 		(void)_i2c_abort_async(dev);
+		/*
+		 * Abort does not confirm the master went idle when it times out,
+		 * so clear the async state unconditionally. This stops the
+		 * interrupt handler from starting a spurious read after a failed
+		 * write and leaving a stale completion for the next transfer.
+		 */
+		data->pending = CAT1_I2C_PENDING_NONE;
 		data->error = true;
 		k_sem_give(&data->transfer_sem);
+	} else if ((data->async_pending == CAT1_I2C_PENDING_TX_RX) &&
+		   ((CY_SCB_I2C_MASTER_WR_CMPLT_EVENT & event) != 0) &&
+		   (data->pending == CAT1_I2C_PENDING_TX_RX)) {
+		/*
+		 * Chain the read phase only after the write phase completes. A
+		 * write to an absent target reports its address NACK through the
+		 * error event above, so the read is never issued and cannot
+		 * return stale data.
+		 */
+		data->pending = CAT1_I2C_PENDING_RX;
+		Cy_SCB_I2C_MasterRead(config->base, &data->rx_config, &data->context);
 	} else if (((data->async_pending == CAT1_I2C_PENDING_TX_RX) &&
 		    ((CY_SCB_I2C_MASTER_RD_CMPLT_EVENT & event) != 0)) ||
 		   (data->async_pending != CAT1_I2C_PENDING_TX_RX)) {
@@ -459,14 +483,14 @@ static int ifx_cat1_i2c_configure(const struct device *dev, uint32_t dev_config)
 		}
 
 		if (dev_config & I2C_MODE_CONTROLLER) {
-			_i2c_default_config.i2cMode = CY_SCB_I2C_MASTER;
+			data->scb_config.i2cMode = CY_SCB_I2C_MASTER;
 			is_target_mode = false;
 		} else {
-			_i2c_default_config.i2cMode = CY_SCB_I2C_SLAVE;
+			data->scb_config.i2cMode = CY_SCB_I2C_SLAVE;
 			is_target_mode = true;
 		}
 	} else {
-		is_target_mode = (_i2c_default_config.i2cMode == CY_SCB_I2C_SLAVE);
+		is_target_mode = (data->scb_config.i2cMode == CY_SCB_I2C_SLAVE);
 	}
 
 	/* Acquire semaphore (block I2C operation for another thread) */
@@ -475,11 +499,19 @@ static int ifx_cat1_i2c_configure(const struct device *dev, uint32_t dev_config)
 		return -EIO;
 	}
 
-	_i2c_default_config.slaveAddress = data->slave_address;
+	data->scb_config.slaveAddress = data->slave_address;
 
 	if (is_target_mode) {
-		_i2c_default_config.slaveAddressMask = 0xFE;
-		_i2c_default_config.ackGeneralAddr = false;
+		data->scb_config.slaveAddressMask = 0xFE;
+		data->scb_config.ackGeneralAddr = false;
+	} else {
+		/* Controller mode: the PDL consults these slave-only fields only in
+		 * target mode, but scb_config is a persistent per-instance copy, so
+		 * reset them to their defaults to avoid carrying stale target state
+		 * across a target-to-controller reconfiguration.
+		 */
+		data->scb_config.slaveAddressMask = 0;
+		data->scb_config.ackGeneralAddr = false;
 	}
 
 	/* De-initialize SCB before re-configuring (required when switching modes) */
@@ -487,7 +519,7 @@ static int ifx_cat1_i2c_configure(const struct device *dev, uint32_t dev_config)
 	Cy_SCB_I2C_DeInit(config->base);
 
 	/* Configure the I2C resource */
-	rslt = Cy_SCB_I2C_Init(config->base, &_i2c_default_config, &data->context);
+	rslt = Cy_SCB_I2C_Init(config->base, &data->scb_config, &data->context);
 	if (rslt != CY_SCB_I2C_SUCCESS) {
 		LOG_ERR("I2C configure failed with err 0x%x", rslt);
 		k_sem_give(&data->operation_sem);
@@ -496,7 +528,7 @@ static int ifx_cat1_i2c_configure(const struct device *dev, uint32_t dev_config)
 
 #ifdef USE_I2C_SET_PERI_DIVIDER
 	_i2c_set_peri_divider(dev, CAT1_I2C_SPEED_STANDARD_HZ,
-			      (_i2c_default_config.i2cMode == CY_SCB_I2C_SLAVE));
+			      (data->scb_config.i2cMode == CY_SCB_I2C_SLAVE));
 #elif defined(CONFIG_SOC_FAMILY_INFINEON_PSOC4)
 	if (_i2c_set_peri_divider_psoc4(dev, data->frequencyhal_hz, is_target_mode) != 0) {
 		LOG_ERR("Failed to configure I2C peripheral clock divider");
@@ -609,6 +641,7 @@ static int ifx_cat1_i2c_transfer(const struct device *dev, struct i2c_msg *msg, 
 	struct i2c_msg *tx_msg;
 	struct i2c_msg *rx_msg;
 	struct ifx_cat1_i2c_data *data = dev->data;
+	const struct ifx_cat1_i2c_config *const config = dev->config;
 	int ret;
 
 	/* Acquire semaphore (block I2C transfer for another thread) */
@@ -636,7 +669,7 @@ static int ifx_cat1_i2c_transfer(const struct device *dev, struct i2c_msg *msg, 
 
 		if ((msg[i].flags & I2C_MSG_READ) != 0) {
 			rx_msg = &msg[i];
-			data->async_pending = CAT1_I2C_PENDING_TX;
+			data->async_pending = CAT1_I2C_PENDING_RX;
 		} else {
 			tx_msg = &msg[i];
 
@@ -660,11 +693,33 @@ static int ifx_cat1_i2c_transfer(const struct device *dev, struct i2c_msg *msg, 
 			return ret;
 		}
 
-		/* Acquire semaphore (block I2C async transfer for another thread) */
-		ret = k_sem_take(&data->transfer_sem, K_FOREVER);
-		if (ret < 0) {
+		/* Wait for the async transfer to complete, bounded by the
+		 * per-bus transfer timeout.
+		 */
+		ret = k_sem_take(&data->transfer_sem, config->transfer_timeout);
+		if (ret != 0) {
+			cy_rslt_t abort_status;
+
+			/* The transfer did not complete in time, for example a
+			 * target holding the bus low. Abort the async operation,
+			 * then reset the shared async state with the SCB
+			 * interrupt masked so a late completion cannot race the
+			 * teardown or leak into the next transfer.
+			 */
+			abort_status = _i2c_abort_async(dev);
+			if (abort_status != CY_RSLT_SUCCESS) {
+				LOG_WRN("I2C abort did not confirm master idle "
+					"(0x%x); bus may be stuck", abort_status);
+			}
+
+			irq_disable(config->irq_num);
+			data->pending = CAT1_I2C_PENDING_NONE;
+			k_sem_reset(&data->transfer_sem);
+			data->irq_cause &= ~I2C_CAT1_EVENTS_MASK;
+			irq_enable(config->irq_num);
+
 			k_sem_give(&data->operation_sem);
-			return -EIO;
+			return -ETIMEDOUT;
 		}
 
 		/* Check for an error during the transfer */
@@ -715,6 +770,9 @@ static int ifx_cat1_i2c_init(const struct device *dev)
 
 	/* Initial value for async operations */
 	data->pending = CAT1_I2C_PENDING_NONE;
+
+	/* Seed this instance's mutable SCB config from the read-only template */
+	data->scb_config = _i2c_default_config;
 
 	config->irq_config_func(dev);
 
@@ -809,21 +867,13 @@ static void i2c_isr_handler(const struct device *dev)
 	Cy_SCB_I2C_Interrupt(config->base, &data->context);
 
 	if (data->pending != CAT1_I2C_PENDING_NONE) {
-		/* This code is part of _i2c_master_transfer_async() API functionality */
-		/* _i2c_master_transfer_async() API uses this interrupt handler for RX transfer
+		/* The write-read read phase is chained from the master
+		 * WR_CMPLT event, so only the single TX or RX phase needs to be
+		 * cleared once the master goes idle.
 		 */
 		if (0 == (Cy_SCB_I2C_MasterGetStatus(config->base, &data->context) &
 			  CY_SCB_I2C_MASTER_BUSY)) {
-			/* Check if TX is completed and run RX in case when TX and RX are enabled */
-			if (data->pending == CAT1_I2C_PENDING_TX_RX) {
-				/* Start RX transfer */
-				data->pending = CAT1_I2C_PENDING_RX;
-				Cy_SCB_I2C_MasterRead(config->base, &data->rx_config,
-						      &data->context);
-			} else {
-				/* Finish async TX or RX separate transfer */
-				data->pending = CAT1_I2C_PENDING_NONE;
-			}
+			data->pending = CAT1_I2C_PENDING_NONE;
 		}
 	}
 }
@@ -1005,6 +1055,7 @@ static DEVICE_API(i2c, i2c_cat1_driver_api) = {
 		.clk_dst = DT_INST_PROP(n, clk_dst),                                               \
 		.irq_config_func = ifx_cat1_i2c_irq_config_func_##n,                               \
 		.i2c_handle_events_func = i2c_handle_events_func_##n,                              \
+		.transfer_timeout = I2C_DT_INST_TRANSFER_TIMEOUT(n),                               \
 		I2C_CAT1_SCL_INIT(n)                                                               \
 		I2C_CAT1_SDA_INIT(n)                                                               \
 	};                                                                                         \

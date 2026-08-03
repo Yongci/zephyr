@@ -90,11 +90,10 @@
 			compatible = "st,stm32u5-dma";
 			#dma-cells = <3>;
 			reg = <0x40020000 0x1000>;
-			interrupts = <29 0 30 0 31 0 32 0 33 0 34 0 35 0 36 0>;
+			interrupts = <29 0>, <30 0>, <31 0>, <32 0>, <33 0>, <34 0>, <35 0>, <36 0>;
 			clocks = <&rcc STM32_CLOCK(AHB1, 0)>;
 			dma-channels = <8>;
 			dma-requests = <52>;
-			dma-offset = <0>;
 			status = "disabled";
 		};
 
@@ -105,13 +104,9 @@
 			interrupts = <0 0>;
 			status = "disabled";
 		};
-	};
 
-	bt_hci_wba: bt_hci_wba {
-		interrupts = <66 0>;
-	};
-
-	ieee802154: ieee802154 {
-		interrupts = <66 0>;
+		radio: radio@48020000 {
+			interrupts = <66 0>;
+		};
 	};
 };

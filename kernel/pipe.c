@@ -131,18 +131,18 @@ static size_t copy_to_pending_readers(struct k_pipe *pipe, bool *need_resched,
 			} else {
 				/*
 				 * This reader has received all the data
-				 * it was waiting for: wake it up with
-				 * the scheduler lock still held.
+				 * it was waiting for. Set its return
+				 * value, unpend, abort its timeout, and
+				 * ready it, all under the scheduler lock
+				 * so a racing timeout handler cannot
+				 * observe a half-initialized wake-up.
 				 */
+				z_thread_return_value_set_with_data(reader, 0, NULL);
 				unpend_thread_no_timeout(reader);
-				z_abort_thread_timeout(reader);
+				(void)z_try_abort_thread_timeout(reader);
+				z_sched_ready_locked(reader);
+				*need_resched = true;
 			}
-		}
-		if (reader != NULL) {
-			/* rest of thread wake-up outside the scheduler lock */
-			z_thread_return_value_set_with_data(reader, 0, NULL);
-			z_ready_thread(reader);
-			*need_resched = true;
 		}
 	} while (reader != NULL && written < len);
 
@@ -341,20 +341,5 @@ void z_vrfy_k_pipe_close(struct k_pipe *pipe)
 #endif /* CONFIG_USERSPACE */
 
 #ifdef CONFIG_OBJ_CORE_PIPE
-static int init_pipe_obj_core_list(void)
-{
-	/* Initialize pipe object type */
-	z_obj_type_init(&obj_type_pipe, K_OBJ_TYPE_PIPE_ID,
-			offsetof(struct k_pipe, obj_core));
-
-	/* Initialize and link statically defined pipes */
-	STRUCT_SECTION_FOREACH(k_pipe, pipe) {
-		k_obj_core_init_and_link(K_OBJ_CORE(pipe), &obj_type_pipe);
-	}
-
-	return 0;
-}
-
-SYS_INIT(init_pipe_obj_core_list, PRE_KERNEL_1,
-	 CONFIG_KERNEL_INIT_PRIORITY_OBJECTS);
+K_OBJ_TYPE_DEFINE(obj_type_pipe, k_pipe, K_OBJ_TYPE_PIPE_ID, NULL);
 #endif /* CONFIG_OBJ_CORE_PIPE */

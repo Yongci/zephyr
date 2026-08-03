@@ -12,6 +12,7 @@ add_subdirectory_ifdef(CONFIG_LORAWAN lorawan)
 add_compile_options($<TARGET_PROPERTY:compiler,warning_shadow_variables>)
 
 # zephyr-keep-sorted-start
+add_subdirectory(authentication)
 add_subdirectory(canbus)
 add_subdirectory(debug)
 add_subdirectory(fs)
@@ -61,5 +62,6 @@ add_subdirectory_ifdef(CONFIG_SETTINGS settings)
 add_subdirectory_ifdef(CONFIG_SHELL shell)
 add_subdirectory_ifdef(CONFIG_TASK_WDT task_wdt)
 add_subdirectory_ifdef(CONFIG_TIMING_FUNCTIONS timing)
+add_subdirectory_ifdef(CONFIG_VIDEO video)
 add_subdirectory_ifdef(CONFIG_ZBUS zbus)
 # zephyr-keep-sorted-stop

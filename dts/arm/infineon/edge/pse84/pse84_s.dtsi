@@ -310,8 +310,6 @@
 			reg = <0x52880000 0x10000>;
 			status = "disabled";
 			wakeup-source;
-			#address-cells = <1>;
-			#size-cells = <1>;
 
 			lpcomp0_0: lpcomp0-0 {
 				compatible = "infineon,lp-comp-channel";
@@ -329,8 +327,9 @@
 		autanalog: analog@52e00000 {
 			compatible = "infineon,autanalog";
 			reg = <0x52e00000 0x100000>;
-			interrupts = <57 4>;
 			wakeup-source;
+			interrupts = <57 4>, <58 4>;
+			interrupt-names = "autanalog", "autanalog_fifo";
 			#address-cells = <1>;
 			#size-cells = <1>;
 			ranges;

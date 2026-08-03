@@ -13,7 +13,6 @@
 extern "C" {
 #endif
 
-#if defined(CONFIG_ARM_MPU)
 struct k_thread;
 
 #if defined(CONFIG_USERSPACE)
@@ -100,13 +99,29 @@ struct k_thread;
 
 #endif /* CONFIG_USERSPACE */
 
-
 /* ARM Core MPU Driver API */
 
 /*
  * This API has to be implemented by all the MPU drivers that have
  * ARM_MPU support.
  */
+
+/**
+ * @brief initialize the MPU
+ *
+ * On SMP, this is called by each core and must initialize the local MPU.
+ */
+int z_arm_mpu_init(void);
+
+/**
+ * @brief enable the MPU
+ */
+void arm_core_mpu_enable(void);
+
+/**
+ * @brief disable the MPU
+ */
+void arm_core_mpu_disable(void);
 
 /**
  * @brief configure a set of fixed (static) MPU regions
@@ -262,8 +277,6 @@ int arm_core_mpu_get_max_available_dyn_regions(void);
  *       permit user access).
  */
 int arm_core_mpu_buffer_validate(const void *addr, size_t size, int write);
-
-#endif /* CONFIG_ARM_MPU */
 
 #ifdef __cplusplus
 }

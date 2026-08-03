@@ -891,6 +891,19 @@ static int usbd_cdc_ncm_ctd(struct usbd_class_data *const c_data,
 			    const struct usb_setup_packet *const setup,
 			    const struct net_buf *const buf)
 {
+	if (setup->wLength && (buf == NULL)) {
+		if (setup->RequestType.recipient == USB_REQTYPE_RECIPIENT_INTERFACE &&
+		    setup->bRequest == SET_NTB_INPUT_SIZE &&
+		    (setup->wLength == 4 || setup->wLength == 8)) {
+			/* Data OUT can be received */
+			return 0;
+		}
+
+		LOG_DBG("bmRequestType 0x%02x bRequest 0x%02x wLength %u unsupported",
+			setup->bmRequestType, setup->bRequest, setup->wLength);
+		return -ENOTSUP;
+	}
+
 	if (setup->RequestType.recipient == USB_REQTYPE_RECIPIENT_INTERFACE) {
 		if (setup->bRequest == SET_ETHERNET_PACKET_FILTER) {
 			LOG_DBG("bRequest 0x%02x (%s) not implemented",
@@ -913,21 +926,33 @@ static int usbd_cdc_ncm_ctd(struct usbd_class_data *const c_data,
 
 	LOG_DBG("bmRequestType 0x%02x bRequest 0x%02x unsupported",
 		setup->bmRequestType, setup->bRequest);
-	errno = -ENOTSUP;
-
-	return 0;
+	return -ENOTSUP;
 }
 
-static int usbd_cdc_ncm_cth(struct usbd_class_data *const c_data,
-			    const struct usb_setup_packet *const setup,
-			    struct net_buf *const buf)
+static struct net_buf *cdc_ncm_cth_response(struct usbd_class_data *const c_data,
+					    const struct usb_setup_packet *const setup,
+					    const void *data, uint16_t data_len)
+{
+	struct net_buf *buf;
+	uint16_t len = MIN(setup->wLength, data_len);
+
+	buf = usbd_ep_ctrl_data_in_alloc(usbd_class_get_ctx(c_data), len);
+	if (buf == NULL) {
+		return NULL;
+	}
+
+	net_buf_add_mem(buf, data, len);
+	return buf;
+}
+
+static struct net_buf *usbd_cdc_ncm_cth(struct usbd_class_data *const c_data,
+					const struct usb_setup_packet *const setup)
 {
 	LOG_DBG("%d: %d %d %d %d", setup->RequestType.type, setup->bRequest,
 		setup->wLength, setup->wIndex, setup->wValue);
 
 	if (setup->RequestType.type != USB_REQTYPE_TYPE_CLASS) {
-		errno = ENOTSUP;
-		goto out;
+		return NULL;
 	}
 
 	switch (setup->bRequest) {
@@ -948,8 +973,7 @@ static int usbd_cdc_ncm_cth(struct usbd_class_data *const c_data,
 		};
 
 		LOG_DBG("GET_NTB_PARAMETERS");
-		net_buf_add_mem(buf, &ntb_params, sizeof(ntb_params));
-		break;
+		return cdc_ncm_cth_response(c_data, setup, &ntb_params, sizeof(ntb_params));
 	}
 
 	case GET_NTB_INPUT_SIZE: {
@@ -960,18 +984,14 @@ static int usbd_cdc_ncm_cth(struct usbd_class_data *const c_data,
 		};
 
 		LOG_DBG("GET_NTB_INPUT_SIZE");
-		net_buf_add_mem(buf, &input_size, sizeof(input_size));
-		break;
+		return cdc_ncm_cth_response(c_data, setup, &input_size, sizeof(input_size));
 	}
 
 	default:
 		LOG_DBG("bRequest 0x%02x not supported", setup->bRequest);
-		errno = ENOTSUP;
-		break;
 	}
 
-out:
-	return 0;
+	return NULL;
 }
 
 static int usbd_cdc_ncm_init(struct usbd_class_data *const c_data)

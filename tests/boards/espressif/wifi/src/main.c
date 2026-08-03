@@ -13,11 +13,11 @@
 #include <zephyr/net/wifi_nm.h>
 #include <zephyr/net/icmp.h>
 
-#include "icmpv4.h"
+#include <icmpv4.h>
 
 LOG_MODULE_REGISTER(wifi_test, LOG_LEVEL_INF);
 
-#include "net_private.h"
+#include <net_private.h>
 
 K_SEM_DEFINE(wifi_event, 0, 1);
 
@@ -332,7 +332,7 @@ ZTEST(wifi, test_3_disconnect)
 	int ret;
 
 	ret = wifi_disconnect();
-	zassert_equal(ret, 0, "Disconect request failed");
+	zassert_equal(ret, 0, "Disconnect request failed");
 
 	zassert_equal(k_sem_take(&wifi_event, K_SECONDS(CONFIG_WIFI_DISCONNECT_TIMEOUT)), 0,
 		      "Wifi disconnect timed out");

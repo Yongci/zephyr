@@ -102,11 +102,11 @@ DevicetreeBindings.txt
 DevicetreeLinting.txt
 GitDiffCheck.txt
 Gitlint.txt
-Identity.txt
 ImageSize.txt
 Kconfig.txt
 KconfigBasic.txt
 KconfigBasicNoModules.txt
+KconfigFormat.txt
 KconfigHWMv2.txt
 KeepSorted.txt
 LicenseAndCopyrightCheck.txt

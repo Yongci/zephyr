@@ -25,6 +25,8 @@ extern "C" {
 /**
  * @brief Interfaces for PS/2 devices.
  * @defgroup ps2_interface PS/2
+ * @since 2.1
+ * @version 0.8.0
  * @ingroup io_interfaces
  *
  * Callers of this API are responsible for setting the typematic rate
@@ -102,8 +104,7 @@ __subsystem struct ps2_driver_api {
  * @param callback_isr called when PS/2 devices reply to a configuration
  * command or when a mouse/keyboard send data to the client application.
  *
- * @retval 0 If successful.
- * @retval <0 Negative errno code if failure.
+ * @return 0 on success, negative errno value on failure.
  */
 __syscall int ps2_config(const struct device *dev,
 			 ps2_callback_t callback_isr);
@@ -120,8 +121,7 @@ static inline int z_impl_ps2_config(const struct device *dev,
  * @param dev Pointer to the device structure for the driver instance.
  * @param value Data for the PS2 device.
  *
- * @retval 0 If successful.
- * @retval <0 Negative errno code if failure.
+ * @return 0 on success, negative errno value on failure.
  */
 __syscall int ps2_write(const struct device *dev, uint8_t value);
 
@@ -135,8 +135,7 @@ static inline int z_impl_ps2_write(const struct device *dev, uint8_t value)
  * @param dev Pointer to the device structure for the driver instance.
  * @param value Pointer used for reading the PS/2 device.
  *
- * @retval 0 If successful.
- * @retval <0 Negative errno code if failure.
+ * @return 0 on success, negative errno value on failure.
  */
 __syscall int ps2_read(const struct device *dev,  uint8_t *value);
 
@@ -149,8 +148,7 @@ static inline int z_impl_ps2_read(const struct device *dev, uint8_t *value)
  * @brief Enables callback.
  * @param dev Pointer to the device structure for the driver instance.
  *
- * @retval 0 If successful.
- * @retval <0 Negative errno code if failure.
+ * @return 0 on success, negative errno value on failure.
  */
 __syscall int ps2_enable_callback(const struct device *dev);
 
@@ -169,8 +167,7 @@ static inline int z_impl_ps2_enable_callback(const struct device *dev)
  * @brief Disables callback.
  * @param dev Pointer to the device structure for the driver instance.
  *
- * @retval 0 If successful.
- * @retval <0 Negative errno code if failure.
+ * @return 0 on success, negative errno value on failure.
  */
 __syscall int ps2_disable_callback(const struct device *dev);
 

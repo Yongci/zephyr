@@ -15,8 +15,10 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/interrupt_controller/intc_esp32.h>
+#include "sdhc_helpers.h"
 
 #include <esp_clk_tree.h>
+#include <esp_private/esp_clk_tree_common.h>
 #include <hal/sdmmc_ll.h>
 #include <esp_intr_alloc.h>
 #include <esp_timer.h>
@@ -142,8 +144,12 @@ static int sdmmc_host_set_clk_div(sdmmc_dev_t *sdio_hw, int div)
 	}
 
 	sdmmc_ll_set_clock_div(sdio_hw, div);
+	esp_clk_tree_enable_src(SDMMC_CLK_SRC_DEFAULT, true);
 	sdmmc_ll_select_clk_source(sdio_hw, SDMMC_CLK_SRC_DEFAULT);
 	sdmmc_ll_init_phase_delay(sdio_hw);
+#if SDMMC_LL_DELAY_PHASE_SUPPORTED
+	sdmmc_ll_set_din_delay_phase(sdio_hw, SDMMC_LL_DELAY_PHASE_0, SDMMC_LL_SPEED_MODE_LS);
+#endif
 
 	/* Wait for the clock to propagate */
 	esp_rom_delay_us(10);
@@ -991,10 +997,12 @@ static int sdhc_esp32_set_io(const struct device *dev, struct sdhc_io *ios)
 	uint8_t bus_width;
 	int ret = 0;
 
-	LOG_INF("SDHC I/O: slot: %d, bus width %d, clock %dHz, card power %s, voltage %s",
+	LOG_INF("SDHC I/O: slot: %d, bus width %d, clock %dHz, card power %s, "
+		"timing %s, voltage %s",
 		cfg->slot, ios->bus_width, ios->clock,
 		ios->power_mode == SDHC_POWER_ON ? "ON" : "OFF",
-		ios->signal_voltage == SD_VOL_1_8_V ? "1.8V" : "3.3V");
+		sdhc_timing_mode_str(ios->timing),
+		sd_voltage_str(ios->signal_voltage));
 
 	if (ios->clock) {
 		/* Check for frequency boundaries supported by host */
@@ -1256,6 +1264,20 @@ static int sdhc_esp32_request(const struct device *dev, struct sdhc_command *cmd
 	case SD_WRITE_SINGLE_BLOCK:
 	case SD_WRITE_MULTIPLE_BLOCK:
 		esp_cmd.flags = SCF_CMD_ADTC | SCF_RSP_R1;
+		break;
+
+	case SD_ERASE_BLOCK_START:
+	case SD_ERASE_BLOCK_END:
+		esp_cmd.flags = SCF_CMD_AC | SCF_RSP_R1;
+		break;
+
+	case SD_ERASE_BLOCK_OPERATION:
+		/*
+		 * The erase drives the card busy on DAT0 (R1b). Wait for the
+		 * busy signal to clear before returning so the caller does not
+		 * issue the next command while the erase is still in progress.
+		 */
+		esp_cmd.flags = SCF_CMD_AC | SCF_RSP_R1B | SCF_WAIT_BUSY;
 		break;
 
 	default:

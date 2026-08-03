@@ -444,9 +444,7 @@ static int eth_xmc4xxx_send(const struct device *dev, struct net_pkt *pkt)
 			dma_desc->status |= ETH_MAC_DMA_TDES0_FS;
 
 #if defined(CONFIG_NET_GPTP)
-			struct net_eth_hdr *hdr = NET_ETH_HDR(pkt);
-
-			if (net_ntohs(hdr->type) == NET_ETH_PTYPE_PTP) {
+			if (net_pkt_is_tx_timestamping(pkt)) {
 				dma_desc->status |= ETH_MAC_DMA_TDES0_TTSE;
 			}
 #endif
@@ -623,6 +621,7 @@ static struct net_pkt *eth_xmc4xxx_rx_pkt(const struct device *dev)
 						.nanosecond = dma_desc->time_stamp_nanoseconds};
 
 					net_pkt_set_timestamp(pkt, &timestamp);
+					net_pkt_set_rx_timestamping(pkt, true);
 					net_pkt_set_priority(pkt, NET_PRIORITY_CA);
 				}
 			}
@@ -670,12 +669,15 @@ static struct net_pkt *eth_xmc4xxx_rx_pkt(const struct device *dev)
 			}
 		}
 
-prepare_dma_descriptor:
+prepare_dma_descriptor: {
+		struct net_buf *rx_buf = dev_data->rx_frag_list[tail];
+
 		/* Prepare the current DMA descriptor for the next reception. */
-		dma_desc->buffer1 = (uint32_t)dev_data->rx_frag_list[tail]->data;
-		dma_desc->length = dev_data->rx_frag_list[tail]->size |
+		dma_desc->buffer1 = (uint32_t)rx_buf->data;
+		dma_desc->length = rx_buf->size |
 				   ETH_RX_DMA_DESC_SECOND_ADDR_CHAINED_MASK;
 		dma_desc->status = ETH_MAC_DMA_RDES0_OWN;
+	}
 
 		if (tail == frame_end_index) {
 			/* Time to leave the loop. */
@@ -844,12 +846,10 @@ static void phy_link_state_changed(const struct device *phy_dev, struct phy_link
 	bool is_up = state->is_up;
 
 	if (is_up && !dev_data->link_up) {
-		LOG_INF("Link up");
 		dev_data->link_up = true;
 		net_eth_carrier_on(dev_data->iface);
 		eth_xmc4xxx_set_link(dev_cfg->regs, state);
 	} else if (!is_up && dev_data->link_up) {
-		LOG_INF("Link down");
 		dev_data->link_up = false;
 		net_eth_carrier_off(dev_data->iface);
 	}
@@ -905,8 +905,7 @@ static inline void eth_xmc4xxx_free_rx_bufs(const struct device *dev)
 
 	for (int i = 0; i < NUM_RX_DMA_DESCRIPTORS; i++) {
 		if (dev_data->rx_frag_list[i]) {
-			net_buf_unref(dev_data->rx_frag_list[i]);
-			dev_data->rx_frag_list[i] = NULL;
+			net_buf_drop(&dev_data->rx_frag_list[i]);
 		}
 	}
 }
@@ -1031,11 +1030,6 @@ static int eth_xmc4xxx_init(const struct device *dev)
 	sys_slist_init(&dev_data->tx_frame_list);
 	k_sem_init(&dev_data->tx_desc_sem, NUM_TX_DMA_DESCRIPTORS, NUM_TX_DMA_DESCRIPTORS);
 
-	if (!device_is_ready(dev_cfg->phy_dev)) {
-		LOG_ERR("Phy device not ready");
-		return -ENODEV;
-	}
-
 	/* get the port control initialized by MDIO driver */
 	port_ctrl.raw = ETH0_CON->CON;
 	port_ctrl.raw |= dev_cfg->port_ctrl.raw;
@@ -1115,10 +1109,6 @@ static enum ethernet_hw_caps eth_xmc4xxx_capabilities(const struct device *dev _
 	ARG_UNUSED(dev);
 	enum ethernet_hw_caps caps = ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE |
 				     ETHERNET_HW_TX_CHKSUM_OFFLOAD | ETHERNET_HW_RX_CHKSUM_OFFLOAD;
-
-#if defined(CONFIG_PTP_CLOCK_XMC4XXX)
-	caps |= ETHERNET_PTP;
-#endif
 
 #if defined(CONFIG_NET_VLAN)
 	caps |= ETHERNET_HW_VLAN;

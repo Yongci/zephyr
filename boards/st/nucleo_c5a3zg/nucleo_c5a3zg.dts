@@ -21,6 +21,7 @@
 		zephyr,code-partition = &slot0_partition;
 		zephyr,shell-uart = &lpuart1;
 		zephyr,sram = &sram1;
+		zephyr,system-timer = &lptim1;
 		zephyr,flash = &flash0;
 	};
 
@@ -176,12 +177,16 @@
 &i2c1 {
 	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 6 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
 
 &i2c2 {
 	pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pb4>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 4 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
 
@@ -201,6 +206,12 @@
 };
 
 &lpdma1 {
+	status = "okay";
+};
+
+&lptim1 {
+	clocks = <&rcc STM32_CLOCK(APB3, 11)>,
+		 <&rcc STM32_SRC_LSE LPTIM1_SEL(2)>;
 	status = "okay";
 };
 
