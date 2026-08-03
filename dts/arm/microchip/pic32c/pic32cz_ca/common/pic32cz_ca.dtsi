@@ -31,6 +31,8 @@
 		flash0: flash@8000000 {
 			compatible = "soc-nv-flash";
 			write-block-size = <8>;
+			#address-cells = <1>;
+			#size-cells = <1>;
 		};
 
 		sram0: memory@20000000 {
@@ -137,6 +139,18 @@
 				#microchip,pin-cells = <2>;
 				status = "disabled";
 			};
+		};
+
+		dmac: dmac@44850000 {
+			compatible = "microchip,dmac-g3-dma";
+			reg = <0x44850000 0x54c>;
+			interrupts = <42 0>, <41 0>, <40 0>, <39 0>;
+			interrupt-names = "prio-0", "prio-1", "prio-2", "prio-3";
+			clocks = <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_DMAC_AHB>;
+			clock-names = "mclk";
+			dma-channels = <16>;
+			#dma-cells = <2>;
+			status = "disabled";
 		};
 
 		sercom2: sercom@45800000 {

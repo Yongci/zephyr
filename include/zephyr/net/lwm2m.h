@@ -81,6 +81,7 @@ extern "C" {
 #define IPSO_OBJECT_VOLTAGE_SENSOR_ID       3316 /**< IPSO Voltage Sensor object */
 #define IPSO_OBJECT_CURRENT_SENSOR_ID       3317 /**< IPSO Current Sensor object */
 #define IPSO_OBJECT_PRESSURE_ID             3323 /**< IPSO Pressure Sensor object */
+#define IPSO_OBJECT_TIME_ID                 3333 /**< IPSO Time object */
 #define IPSO_OBJECT_BUZZER_ID               3338 /**< IPSO Buzzer object */
 #define IPSO_OBJECT_TIMER_ID                3340 /**< IPSO Timer object */
 #define IPSO_OBJECT_ONOFF_SWITCH_ID         3342 /**< IPSO On/Off Switch object */
@@ -773,7 +774,7 @@ int lwm2m_swmgmt_set_write_package_cb(uint16_t obj_inst_id, lwm2m_engine_set_dat
  * @param[in] error_code The result code of the operation. Zero on success
  * otherwise it should be a negative integer.
  *
- * return 0 on success, otherwise a negative integer.
+ * @return 0 on success, otherwise a negative integer.
  */
 int lwm2m_swmgmt_install_completed(uint16_t obj_inst_id, int error_code);
 

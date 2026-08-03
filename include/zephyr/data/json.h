@@ -19,6 +19,8 @@ extern "C" {
 
 /**
  * @defgroup json JSON
+ * @since 1.10
+ * @version 1.0.0
  * @ingroup utilities
  * @{
  */
@@ -614,6 +616,22 @@ typedef int (*json_append_bytes_t)(const char *bytes, size_t len,
  * accepted);
  * (2) no UTF-8 validation is performed; and
  * (3) only integer numbers are supported (no strtod() in the minimal libc).
+ *
+ * @note Polymorphic decoding: Multiple descriptors may share the same field
+ * name to handle fields that can contain different JSON types. This is
+ * primarily intended for scalar types, such as JSON-RPC style "id" fields
+ * that may be either a string or a number.
+ *
+ * When decoding fails for a descriptor, the behavior depends on the actual
+ * JSON token type:
+ *
+ * - Scalar tokens (strings, numbers, booleans): The parser continues to try
+ *   alternate descriptors, since no parsing occurred and the lexer state
+ *   remains valid.
+ *
+ * - Complex tokens (objects, arrays): The parser returns the error immediately,
+ *   since partial parsing may have corrupted the lexer state, making it unsafe
+ *   to continue with other descriptors.
  *
  * @param json Pointer to JSON-encoded value to be parsed
  * @param len Length of JSON-encoded value

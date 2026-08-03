@@ -9,8 +9,8 @@
 
 #if defined(CONFIG_SOC_SERIES_NRF51) || defined(CONFIG_SOC_SERIES_NRF52)
 #include <hal/nrf_power.h>
-#elif defined(CONFIG_NRF_PLATFORM_HALTIUM)
-#include <haltium_power.h>
+#elif defined(CONFIG_SOC_SERIES_NRF54H) || defined(CONFIG_SOC_SERIES_NRF92)
+#include <soc_power.h>
 #else
 #include <hal/nrf_regulators.h>
 #endif
@@ -53,6 +53,9 @@ void z_sys_poweroff(void)
 #if defined(NRF_MEMORY_RAM2_SIZE)
 	ram_size += NRF_MEMORY_RAM2_SIZE;
 #endif
+#if defined(NRF_MEMORY_RAM3_SIZE)
+	ram_size += NRF_MEMORY_RAM3_SIZE;
+#endif
 
 	/* Disable retention for all memory blocks */
 	nrfx_ram_ctrl_retention_enable_set(ram_start, ram_size, false);
@@ -72,7 +75,7 @@ void z_sys_poweroff(void)
 #endif
 #if defined(CONFIG_SOC_SERIES_NRF51) || defined(CONFIG_SOC_SERIES_NRF52)
 	nrf_power_system_off(NRF_POWER);
-#elif defined(CONFIG_NRF_PLATFORM_HALTIUM)
+#elif defined(CONFIG_SOC_SERIES_NRF54H) || defined(CONFIG_SOC_SERIES_NRF92)
 	nrf_poweroff();
 #else
 	nrf_regulators_system_off(NRF_REGULATORS);
