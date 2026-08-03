@@ -76,6 +76,10 @@
 	pinctrl-names = "default";
 };
 
+&usb_serial {
+	status = "okay";
+};
+
 &trng0 {
 	status = "okay";
 };

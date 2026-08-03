@@ -10,6 +10,7 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/init.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(envdaq, LOG_LEVEL_INF);
@@ -38,24 +39,25 @@ static const struct device *adc_dev = DEVICE_DT_GET(ADC_DEVICE_NODE);
 #define ADC_SAMPLE_COUNT 16
 
 /* ============================================================
- * Two-Point Linear Calibration (Fine-Tuned)
- * 
+ * Two-Point Linear Calibration (integer mV-based)
+ *
  * Measured with a multimeter:
- *   Point 1: ADC = 1.62V, Battery = 9.99V
- *   Point 2: ADC = 1.72V, Battery = 12.715V (updated)
- * 
- * Formula: V_battery = slope * V_adc + offset
- *       slope = (12.715 - 9.99) / (1.72 - 1.62) = 27.25
- *       offset = 9.99 - 27.25 * 1.62 = -34.155
+ *   Point 1: ADC = 1620 mV, Battery = 9990 mV
+ *   Point 2: ADC = 1720 mV, Battery = 12715 mV
+ *
+ * Formula: battery_mv = (adc_mv * slope_num) / slope_den + offset_mv
+ *          slope_num / slope_den = 27.25 = 109 / 4
+ *          offset_mv = -34155
  * ============================================================ */
 
-#define CAL_POINT1_ADC_V    1.620f
-#define CAL_POINT1_BATTERY_V 9.990f
-#define CAL_POINT2_ADC_V    1.720f
-#define CAL_POINT2_BATTERY_V 12.715f
+#define CAL_POINT1_ADC_MV      1620
+#define CAL_POINT1_BATTERY_MV 9990
+#define CAL_POINT2_ADC_MV      1720
+#define CAL_POINT2_BATTERY_MV 12715
 
-static const float cal_slope = 27.250f;
-static const float cal_offset = -34.155f;
+#define CAL_SLOPE_NUM 109
+#define CAL_SLOPE_DEN 4
+#define CAL_OFFSET_MV (-34155)
 
 /* ============================================================
  * Battery Voltage Reading Functions (with oversampling)
@@ -119,24 +121,16 @@ static int read_battery_voltage(int32_t *voltage_mv, int32_t *adc_input_mv)
 
 	*adc_input_mv = adc_mv;
 
-	/* 应用线性校准 */
-	float adc_voltage = (float)adc_mv / 1000.0f;
-	float battery_voltage = cal_slope * adc_voltage + cal_offset;
+	/* Apply the linear calibration in millivolts using integer math */
+	int64_t battery_mv = ((int64_t)adc_mv * CAL_SLOPE_NUM) / CAL_SLOPE_DEN +
+			     CAL_OFFSET_MV;
 
-	*voltage_mv = (int32_t)(battery_voltage * 1000 + 0.5f);
+	*voltage_mv = (int32_t)battery_mv;
 
 	LOG_DBG("ADC raw avg: %d, ADC mV: %d, Battery mV: %d",
 		avg_raw, adc_mv, *voltage_mv);
 
 	return 0;
-}
-
-static void format_battery_voltage(int32_t voltage_mv, char *buf, size_t buf_len)
-{
-	int32_t whole = voltage_mv / 1000;
-	int32_t frac = (voltage_mv % 1000) / 10;
-
-	snprintk(buf, buf_len, "%d.%02d V", whole, frac);
 }
 
 /* ============================================================
@@ -306,7 +300,6 @@ static int cmd_envdaq_help(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "  envdaq echo     - Echo back arguments");
 	shell_print(sh, "  envdaq relay    - Control relay_a and relay_b");
 	shell_print(sh, "  envdaq battery  - Read battery voltage");
-	shell_print(sh, "  envdaq calinfo  - Show calibration info");
 	shell_print(sh, "  envdaq help     - Show this help");
 	shell_print(sh, "");
 	shell_print(sh, "Type 'help' for Zephyr shell built-in commands.");
@@ -390,8 +383,6 @@ static int cmd_envdaq_battery(const struct shell *sh, size_t argc, char **argv)
 	int ret;
 	int32_t voltage_mv;
 	int32_t adc_input_mv;
-	char voltage_str[16];
-	char adc_str[16];
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
@@ -402,32 +393,17 @@ static int cmd_envdaq_battery(const struct shell *sh, size_t argc, char **argv)
 		return ret;
 	}
 
-	format_battery_voltage(voltage_mv, voltage_str, sizeof(voltage_str));
-	format_battery_voltage(adc_input_mv, adc_str, sizeof(adc_str));
-	shell_print(sh, "Battery voltage: %s", voltage_str);
-	shell_print(sh, "ADC input: %s", adc_str);
-
-	return 0;
-}
-
-static int cmd_envdaq_calinfo(const struct shell *sh, size_t argc, char **argv)
-{
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-
-	shell_print(sh, "========================================");
-	shell_print(sh, "ADC Calibration Info");
-	shell_print(sh, "========================================");
-	shell_print(sh, "Cal point 1: ADC=%.3fV, Battery=%.3fV",
-		    CAL_POINT1_ADC_V, CAL_POINT1_BATTERY_V);
-	shell_print(sh, "Cal point 2: ADC=%.3fV, Battery=%.3fV",
-		    CAL_POINT2_ADC_V, CAL_POINT2_BATTERY_V);
-	shell_print(sh, "Slope:  %.4f", cal_slope);
-	shell_print(sh, "Offset: %.4f", cal_offset);
+	shell_print(sh, "Battery voltage: %d mV", voltage_mv);
+	shell_print(sh, "ADC input: %d mV", adc_input_mv);
+	shell_print(sh, "Cal point 1: ADC=%d mV, Battery=%d mV",
+		CAL_POINT1_ADC_MV, CAL_POINT1_BATTERY_MV);
+	shell_print(sh, "Cal point 2: ADC=%d mV, Battery=%d mV",
+		CAL_POINT2_ADC_MV, CAL_POINT2_BATTERY_MV);
+	shell_print(sh, "Slope: %d/%d", CAL_SLOPE_NUM, CAL_SLOPE_DEN);
+	shell_print(sh, "Offset: %d mV", CAL_OFFSET_MV);
 	shell_print(sh, "Samples: %d (oversampling)", ADC_SAMPLE_COUNT);
-	shell_print(sh, "Formula: V_bat = %.4f * V_adc + %.4f",
-		    cal_slope, cal_offset);
-	shell_print(sh, "========================================");
+	shell_print(sh, "Formula: battery_mv = (adc_mv * %d) / %d + %d",
+		CAL_SLOPE_NUM, CAL_SLOPE_DEN, CAL_OFFSET_MV);
 
 	return 0;
 }
@@ -442,7 +418,6 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_envdaq,
 	SHELL_CMD_ARG(echo, NULL, "Echo back arguments", cmd_envdaq_echo, 2, 9),
 	SHELL_CMD_ARG(relay, NULL, "Control relay outputs", cmd_envdaq_relay, 2, 3),
 	SHELL_CMD_ARG(battery, NULL, "Read battery voltage", cmd_envdaq_battery, 1, 0),
-	SHELL_CMD_ARG(calinfo, NULL, "Show ADC calibration info", cmd_envdaq_calinfo, 1, 0),
 	SHELL_CMD_ARG(help, NULL, "Show this help", cmd_envdaq_help, 1, 0),
 	SHELL_SUBCMD_SET_END
 );
@@ -453,7 +428,7 @@ SHELL_CMD_REGISTER(envdaq, &sub_envdaq, "EnvDAQ Shell commands", NULL);
  * Main
  * ============================================================ */
 
-int main(void)
+static int envdaq_post_boot_init(void)
 {
 	int ret;
 
@@ -475,6 +450,13 @@ int main(void)
 		printk("WARNING: ADC device not ready\n");
 	}
 
+	return 0;
+}
+
+SYS_INIT(envdaq_post_boot_init, POST_KERNEL, 99);
+
+int main(void)
+{
 	while (1) {
 		k_sleep(K_SECONDS(10));
 	}
