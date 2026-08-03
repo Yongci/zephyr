@@ -42,6 +42,11 @@ static int mcumgr_serial_extract_len(struct mcumgr_serial_rx_ctxt *rx_ctxt)
 	}
 
 	rx_ctxt->pkt_len = net_buf_pull_be16(rx_ctxt->nb);
+
+	if (rx_ctxt->pkt_len <= sizeof(uint16_t)) {
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -129,10 +134,10 @@ struct net_buf *mcumgr_serial_process_frag(struct mcumgr_serial_rx_ctxt *rx_ctxt
 
 	if (rx_ctxt->nb == NULL) {
 		rx_ctxt->nb = smp_packet_alloc();
-		net_buf_reset(rx_ctxt->nb);
 		if (rx_ctxt->nb == NULL) {
 			return NULL;
 		}
+		net_buf_reset(rx_ctxt->nb);
 	}
 
 #if defined(CONFIG_MCUMGR_TRANSPORT_SERIAL_HAS_SMP_OVER_CONSOLE) && \

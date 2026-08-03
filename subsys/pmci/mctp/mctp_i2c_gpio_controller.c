@@ -5,9 +5,9 @@
  *
  */
 
-#include "zephyr/drivers/gpio.h"
-#include "zephyr/pmci/mctp/mctp_i2c_gpio_common.h"
-#include "zephyr/rtio/rtio.h"
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/pmci/mctp/mctp_i2c_gpio_common.h>
+#include <zephyr/rtio/rtio.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/uart.h>
@@ -33,6 +33,10 @@ static void rx_completion(struct rtio *r, const struct rtio_sqe *sqe, int result
 	}
 
 	struct mctp_pktbuf *pkt = mctp_pktbuf_alloc(&b->binding, b->rx_buf_len);
+	if (pkt == NULL) {
+		LOG_ERR("Failed to allocate pktbuf");
+		return;
+	}
 
 	memcpy(pkt->data, b->rx_buf, b->rx_buf_len);
 

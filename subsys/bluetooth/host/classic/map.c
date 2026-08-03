@@ -385,7 +385,7 @@ static void mce_mas_transport_connected(struct bt_conn *conn, struct bt_goep *go
 	LOG_DBG("MCE MAS transport connected");
 	atomic_set(&mce_mas->_transport_state, BT_MAP_TRANSPORT_STATE_CONNECTED);
 
-	if (mce_mas->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mce_mas->goep.v2 != NULL) {
 		if (mce_mas->_cb != NULL && mce_mas->_cb->l2cap_connected != NULL) {
 			mce_mas->_cb->l2cap_connected(conn, mce_mas);
 		}
@@ -405,7 +405,7 @@ static void mce_mas_transport_disconnected(struct bt_goep *goep)
 	atomic_set(&mce_mas->_state, BT_MAP_STATE_DISCONNECTED);
 	mce_mas_clear_pending_request(mce_mas);
 
-	if (mce_mas->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mce_mas->goep.v2 != NULL) {
 		if (mce_mas->_cb != NULL && mce_mas->_cb->l2cap_disconnected != NULL) {
 			mce_mas->_cb->l2cap_disconnected(mce_mas);
 		}
@@ -436,14 +436,15 @@ static int mce_mas_transport_connect(struct bt_conn *conn, struct bt_map_mce_mas
 	}
 
 	LOG_DBG("MCE MAS transport connecting, type %u", type);
-	mce_mas->_transport_type = type;
 	mce_mas->goep.transport_ops = &mce_mas_transport_ops;
 	atomic_set(&mce_mas->_transport_state, BT_MAP_TRANSPORT_STATE_CONNECTING);
 
 	if (type == MAP_TRANSPORT_TYPE_L2CAP) {
+		BT_GOEP_INIT_V2(&mce_mas->goep, &mce_mas->goep_transport.v2);
 		LOG_DBG("Connecting via L2CAP PSM 0x%04x", psm);
 		err = bt_goep_transport_l2cap_connect(conn, &mce_mas->goep, psm);
 	} else {
+		BT_GOEP_INIT_V1(&mce_mas->goep, &mce_mas->goep_transport.v1);
 		LOG_DBG("Connecting via RFCOMM channel %u", channel);
 		err = bt_goep_transport_rfcomm_connect(conn, &mce_mas->goep, channel);
 	}
@@ -529,7 +530,9 @@ static void mce_mas_connect(struct bt_obex_client *client, uint8_t rsp_code, uin
 		err = bt_obex_get_header_conn_id(buf, &c->_conn_id);
 		if (err != 0) {
 			LOG_ERR("Failed to get connection ID: %d", err);
-			mce_mas_transport_disconnect(c, c->_transport_type);
+			mce_mas_transport_disconnect(c, c->goep.v2 != NULL
+								? MAP_TRANSPORT_TYPE_L2CAP
+								: MAP_TRANSPORT_TYPE_RFCOMM);
 		} else {
 			LOG_DBG("Connection ID: %u", c->_conn_id);
 		}
@@ -970,7 +973,7 @@ static int mce_mas_get_or_put(struct bt_map_mce_mas *mce_mas, bool is_get, const
 	old_req_type = mce_mas->_req_type;
 
 	if (mce_mas->_rsp_cb == NULL || bt_obex_has_header(buf, BT_OBEX_HEADER_ID_TYPE)) {
-		if (is_get && mce_mas->goep._goep_v2 &&
+		if (is_get && mce_mas->goep.v2 != NULL &&
 		    !bt_obex_has_header(buf, BT_OBEX_HEADER_ID_SRM)) {
 			LOG_ERR("Failed to get SRM");
 			return -ENODATA;
@@ -1006,6 +1009,7 @@ static int mce_mas_get_or_put(struct bt_map_mce_mas *mce_mas, bool is_get, const
 
 	if (!is_get && final && !bt_obex_has_header(buf, BT_OBEX_HEADER_ID_END_BODY)) {
 		LOG_ERR("OBEX header (End of Body) is missing");
+		err = -ENODATA;
 		goto failed;
 	}
 
@@ -1078,7 +1082,7 @@ static void mce_mns_transport_connected(struct bt_conn *conn, struct bt_goep *go
 	LOG_DBG("MCE MNS transport connected");
 	atomic_set(&mce_mns->_transport_state, BT_MAP_TRANSPORT_STATE_CONNECTED);
 
-	if (mce_mns->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mce_mns->goep.v2 != NULL) {
 		if (mce_mns->_cb != NULL && mce_mns->_cb->l2cap_connected != NULL) {
 			mce_mns->_cb->l2cap_connected(conn, mce_mns);
 		}
@@ -1104,7 +1108,7 @@ static void mce_mns_transport_disconnected(struct bt_goep *goep)
 		LOG_ERR("Failed to unregister obex server: %d", err);
 	}
 
-	if (mce_mns->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mce_mns->goep.v2 != NULL) {
 		if (mce_mns->_cb != NULL && mce_mns->_cb->l2cap_disconnected != NULL) {
 			mce_mns->_cb->l2cap_disconnected(mce_mns);
 		}
@@ -1347,8 +1351,12 @@ static int mce_mns_accept(struct bt_conn *conn, void *server, uint8_t type, stru
 		return -EINVAL;
 	}
 
-	mce_mns->_transport_type = type;
 	mce_mns->goep.transport_ops = &mce_mns_transport_ops;
+	if (type == MAP_TRANSPORT_TYPE_RFCOMM) {
+		BT_GOEP_INIT_V1(&mce_mns->goep, &mce_mns->goep_transport.v1);
+	} else {
+		BT_GOEP_INIT_V2(&mce_mns->goep, &mce_mns->goep_transport.v2);
+	}
 	mce_mns->_server.ops = &mce_mns_ops;
 	mce_mns->_server.obex = &mce_mns->goep.obex;
 	mce_mns->_conn_id = map_get_connect_id();
@@ -1629,7 +1637,7 @@ static void mse_mas_transport_connected(struct bt_conn *conn, struct bt_goep *go
 	LOG_DBG("MSE MAS transport connected");
 	atomic_set(&mse_mas->_transport_state, BT_MAP_TRANSPORT_STATE_CONNECTED);
 
-	if (mse_mas->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mse_mas->goep.v2 != NULL) {
 		if (mse_mas->_cb != NULL && mse_mas->_cb->l2cap_connected != NULL) {
 			mse_mas->_cb->l2cap_connected(conn, mse_mas);
 		}
@@ -1655,7 +1663,7 @@ static void mse_mas_transport_disconnected(struct bt_goep *goep)
 		LOG_ERR("Failed to unregister obex server: %d", err);
 	}
 
-	if (mse_mas->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mse_mas->goep.v2 != NULL) {
 		if (mse_mas->_cb != NULL && mse_mas->_cb->l2cap_disconnected != NULL) {
 			mse_mas->_cb->l2cap_disconnected(mse_mas);
 		}
@@ -1951,8 +1959,12 @@ static int mse_mas_accept(struct bt_conn *conn, void *server, uint8_t type, stru
 		return -EINVAL;
 	}
 
-	mse_mas->_transport_type = type;
 	mse_mas->goep.transport_ops = &mse_mas_transport_ops;
+	if (type == MAP_TRANSPORT_TYPE_RFCOMM) {
+		BT_GOEP_INIT_V1(&mse_mas->goep, &mse_mas->goep_transport.v1);
+	} else {
+		BT_GOEP_INIT_V2(&mse_mas->goep, &mse_mas->goep_transport.v2);
+	}
 	mse_mas->_server.ops = &mse_mas_ops;
 	mse_mas->_server.obex = &mse_mas->goep.obex;
 	mse_mas->_conn_id = map_get_connect_id();
@@ -2276,7 +2288,7 @@ static void mse_mns_transport_connected(struct bt_conn *conn, struct bt_goep *go
 	LOG_DBG("MSE MNS transport connected");
 	atomic_set(&mse_mns->_transport_state, BT_MAP_TRANSPORT_STATE_CONNECTED);
 
-	if (mse_mns->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mse_mns->goep.v2 != NULL) {
 		if (mse_mns->_cb != NULL && mse_mns->_cb->l2cap_connected != NULL) {
 			mse_mns->_cb->l2cap_connected(conn, mse_mns);
 		}
@@ -2296,7 +2308,7 @@ static void mse_mns_transport_disconnected(struct bt_goep *goep)
 	atomic_set(&mse_mns->_state, BT_MAP_STATE_DISCONNECTED);
 	mse_mns_clear_pending_request(mse_mns);
 
-	if (mse_mns->_transport_type == MAP_TRANSPORT_TYPE_L2CAP) {
+	if (mse_mns->goep.v2 != NULL) {
 		if (mse_mns->_cb != NULL && mse_mns->_cb->l2cap_disconnected != NULL) {
 			mse_mns->_cb->l2cap_disconnected(mse_mns);
 		}
@@ -2327,14 +2339,15 @@ static int mse_mns_transport_connect(struct bt_conn *conn, struct bt_map_mse_mns
 	}
 
 	LOG_DBG("MSE MNS transport connecting, type %u", type);
-	mse_mns->_transport_type = type;
 	mse_mns->goep.transport_ops = &mse_mns_transport_ops;
 	atomic_set(&mse_mns->_transport_state, BT_MAP_TRANSPORT_STATE_CONNECTING);
 
 	if (type == MAP_TRANSPORT_TYPE_L2CAP) {
+		BT_GOEP_INIT_V2(&mse_mns->goep, &mse_mns->goep_transport.v2);
 		LOG_DBG("Connecting via L2CAP PSM 0x%04x", psm);
 		err = bt_goep_transport_l2cap_connect(conn, &mse_mns->goep, psm);
 	} else {
+		BT_GOEP_INIT_V1(&mse_mns->goep, &mse_mns->goep_transport.v1);
 		LOG_DBG("Connecting via RFCOMM channel %u", channel);
 		err = bt_goep_transport_rfcomm_connect(conn, &mse_mns->goep, channel);
 	}
@@ -2420,7 +2433,9 @@ static void mse_mns_connect(struct bt_obex_client *client, uint8_t rsp_code, uin
 		err = bt_obex_get_header_conn_id(buf, &c->_conn_id);
 		if (err != 0) {
 			LOG_ERR("Failed to get connection ID: %d", err);
-			mse_mns_transport_disconnect(c, c->_transport_type);
+			mse_mns_transport_disconnect(c, c->goep.v2 != NULL
+								? MAP_TRANSPORT_TYPE_L2CAP
+								: MAP_TRANSPORT_TYPE_RFCOMM);
 		} else {
 			LOG_DBG("Connection ID: %u", c->_conn_id);
 		}
@@ -2768,7 +2783,7 @@ static int mse_mns_get_or_put(struct bt_map_mse_mns *mse_mns, bool is_get, const
 	old_req_type = mse_mns->_req_type;
 
 	if (mse_mns->_rsp_cb == NULL || bt_obex_has_header(buf, BT_OBEX_HEADER_ID_TYPE)) {
-		if (is_get && mse_mns->goep._goep_v2 &&
+		if (is_get && mse_mns->goep.v2 != NULL &&
 		    !bt_obex_has_header(buf, BT_OBEX_HEADER_ID_SRM)) {
 			LOG_ERR("Failed to get SRM");
 			return -ENODATA;
@@ -2804,6 +2819,7 @@ static int mse_mns_get_or_put(struct bt_map_mse_mns *mse_mns, bool is_get, const
 
 	if (!is_get && final && !bt_obex_has_header(buf, BT_OBEX_HEADER_ID_END_BODY)) {
 		LOG_ERR("OBEX header (End of Body) is missing");
+		err = -ENODATA;
 		goto failed;
 	}
 

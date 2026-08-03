@@ -6,8 +6,8 @@
  *
  */
 
-#ifndef ZEPHYR_MCTP_USB_H_
-#define ZEPHYR_MCTP_USB_H_
+#ifndef ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_USB_H_
+#define ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_USB_H_
 
 #include <zephyr/sys/iterable_sections.h>
 #include <libmctp.h>
@@ -48,9 +48,18 @@ struct mctp_binding_usb {
 	/** @endcond INTERNAL_HIDDEN */
 };
 
+/**
+ * @brief MCTP USB class instance configuration
+ *
+ * Holds the USB interface descriptor parameters and the associated MCTP
+ * bus binding for a single MCTP USB class instance.
+ */
 struct mctp_usb_class_inst {
-	uint8_t sublcass;
+	/** MCTP subclass used in the USB interface descriptor */
+	uint8_t subclass;
+	/** MCTP protocol version used in the USB interface descriptor */
 	uint8_t mctp_protocol;
+	/** Pointer to the associated MCTP USB bus binding */
 	struct mctp_binding_usb *mctp_binding;
 };
 
@@ -85,9 +94,9 @@ int mctp_usb_tx(struct mctp_binding *binding, struct mctp_pktbuf *pkt);
 	};											\
 												\
 	const STRUCT_SECTION_ITERABLE(mctp_usb_class_inst, mctp_usb_class_inst_##_name) = {	\
-		.sublcass = _subclass,								\
+		.subclass = _subclass,								\
 		.mctp_protocol = _protocol,							\
 		.mctp_binding = &_name,								\
 	};
 
-#endif /* ZEPHYR_MCTP_USB_H_ */
+#endif /* ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_USB_H_ */

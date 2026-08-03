@@ -14,7 +14,7 @@
  */
 #include <zephyr/kernel.h>
 #include <zephyr/pm/pm.h>
-#include <zephyr/sys_clock.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/init.h>
 #include <zephyr/arch/common/pm_s2ram.h>
 
@@ -172,6 +172,26 @@ void pm_state_set(enum pm_state state, uint8_t substate_id)
 		post_resume_configuration();
 	}
 }
+
+#ifdef CONFIG_PM_CUSTOM_TICKS_HOOK
+int64_t pm_policy_next_custom_ticks(void)
+{
+	int64_t ticks;
+	uint64_t radio_time;
+
+	/* If any timer1 or timer2 is busy, then inhibit sleep */
+	if (LL_RADIO_TIMER_IsEnabledTimer1(BLUE) || LL_RADIO_TIMER_IsEnabledTimer2(BLUE)) {
+		return 0;
+	} else if (!LL_RADIO_TIMER_IsEnabledBLEWakeupTimer(WAKEUP)) {
+		/* No radio event pending */
+		return -1LL;
+	}
+	(void) HAL_RADIO_TIMER_GetRadioTimerStatus(&radio_time);
+	ticks = (int64_t) k_cyc_to_ticks_near64(radio_time - HAL_RADIO_TIMER_GetCurrentSysTime());
+
+	return MAX(0, ticks);
+}
+#endif /* CONFIG_PM_CUSTOM_TICKS_HOOK */
 
 void pm_state_exit_post_ops(enum pm_state state, uint8_t substate_id)
 {

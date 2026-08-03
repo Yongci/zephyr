@@ -16,6 +16,8 @@
 /**
  * @brief Interfaces for hardware spinlocks.
  * @defgroup hwspinlock_interface Hardware Spinlock
+ * @since 3.5
+ * @version 0.8.0
  * @ingroup io_interfaces
  * @{
  */
@@ -35,14 +37,16 @@ extern "C" {
  * @brief HW spinlock controller runtime context
  */
 struct hwspinlock_context {
-	/**
-	 * @internal
-	 * Per HW spinlock lock
-	 * @note HW spinlock protects resources across clusters, but we need to protect the
-	 * access to HW spinlock inside of the same cluster, so a single thread may claim the
-	 * lock at a time.
+	/** @cond INTERNAL_HIDDEN */
+	/*
+	 * Per HW spinlock lock.
+	 *
+	 * HW spinlock protects resources across clusters, but we need to protect the
+	 * access to the HW spinlock inside of the same cluster, so a single thread may
+	 * claim the lock at a time.
 	 */
 	struct k_spinlock lock;
+	/** @endcond */
 };
 
 /**
@@ -157,7 +161,7 @@ struct hwspinlock_dt_spec {
 /**
  * @brief Instance version of HWSPINLOCK_DT_SPEC_GET_BY_IDX()
  *
- * @param inst DT_DRV_COMPAT instance number
+ * @param inst @c DT_DRV_COMPAT instance number
  * @param idx Index of the hwlocks element
  *
  * @see HWSPINLOCK_DT_SPEC_GET_BY_IDX()
@@ -168,7 +172,7 @@ struct hwspinlock_dt_spec {
 /**
  * @brief Instance version of HWSPINLOCK_DT_SPEC_GET_BY_NAME()
  *
- * @param inst DT_DRV_COMPAT instance number
+ * @param inst @c DT_DRV_COMPAT instance number
  * @param name lowercase-and-underscores name of the hwlocks element
  *
  * @see HWSPINLOCK_DT_SPEC_GET_BY_NAME()
@@ -178,7 +182,7 @@ struct hwspinlock_dt_spec {
 /**
  * @brief Instance version of HWSPINLOCK_DT_SPEC_GET()
  *
- * @param inst DT_DRV_COMPAT instance number
+ * @param inst @c DT_DRV_COMPAT instance number
  *
  * @see HWSPINLOCK_DT_SPEC_GET()
  */

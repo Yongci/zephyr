@@ -11,11 +11,12 @@
 
 #ifndef _ASMLANGUAGE
 
-#include "MEC1501hsz.h"
-#include "regaccess.h"
+#include <MEC1501hsz.h>
+#include <regaccess.h>
 
 /* common peripheral register defines */
 #include <reg/mec_gpio.h>
+#include <reg/mec_pcr_vbr.h>
 #include <reg/mec_uart.h>
 
 /* common SoC API */

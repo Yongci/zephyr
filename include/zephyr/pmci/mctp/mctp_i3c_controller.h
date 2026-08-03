@@ -5,8 +5,8 @@
  *
  */
 
-#ifndef ZEPHYR_MCTP_I3C_CONTROLLER_H_
-#define ZEPHYR_MCTP_I3C_CONTROLLER_H_
+#ifndef ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_I3C_CONTROLLER_H_
+#define ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_I3C_CONTROLLER_H_
 
 #include <stdint.h>
 #include <zephyr/kernel.h>
@@ -56,7 +56,7 @@ int mctp_i3c_controller_tx(struct mctp_binding *binding, struct mctp_pktbuf *pkt
  *
  * This bus binding make use of IBI interrupt signaling from targets to signal their desire
  * to send a message. The binding specification (dsp0233 v1.0.1) offers alternative modes of
- * operaton such as polling or directly reading but these are not implemented.
+ * operation such as polling or directly reading but these are not implemented.
  *
  * @param _name Symbolic name of the bus binding variable
  * @param _node_id DeviceTree Node containing the configuration of this MCTP binding
@@ -80,4 +80,4 @@ int mctp_i3c_controller_tx(struct mctp_binding *binding, struct mctp_pktbuf *pkt
 		.endpoint_i3c_devs = _name##_endpoint_i3c_devs,					\
 	};
 
-#endif /* ZEPHYR_MCTP_I3C_CONTROLLER_H_ */
+#endif /* ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_I3C_CONTROLLER_H_ */
