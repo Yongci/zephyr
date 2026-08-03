@@ -1,0 +1,19 @@
+identifier: envdaq_bot/esp32c6/lpcore
+name: EnvDAQ Bot ESP32-C6-MINI-1U LP Core
+vendor: EnvDAQ
+type: mcu
+arch: riscv
+toolchain:
+  - zephyr
+supported:
+  - cpu
+  - uart
+  - serial
+testing:
+  only_tags:
+    - introduction
+  ignore_tags:
+    - kernel
+    - posix
+    - chre
+    - cpp

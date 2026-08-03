@@ -1,0 +1,6 @@
+board:
+  name: envdaq_bot
+  full_name: EnvDAQ Bot
+  vendor: EnvDAQ
+  socs:
+    - name: esp32c6

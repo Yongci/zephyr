@@ -1,0 +1,52 @@
+# Copyright (c) 2026 Yongci
+
+# SPDX-License-Identifier: Apache-2.0
+
+description: WCH CH224Q USB PD Sink Controller
+
+compatible: "wch,ch224q"
+
+include: [i2c-device.yaml]
+
+properties:
+  int-gpios:
+    type: phandle-array
+    required: false
+    description: |
+      GPIO connected to the INT pin of CH224Q (CFG1 pin when used as interrupt).
+      This pin signals when a PD negotiation is complete or status changed.
+
+  pg-gpios:
+    type: phandle-array
+    required: false
+    description: |
+      GPIO connected to the PG (Power Good) pin of CH224Q.
+      This pin is open-drain, active low. It is pulled low when voltage
+      negotiation is successful and the output voltage is stable.
+
+  cfg2-gpios:
+    type: phandle-array
+    required: false
+    description: |
+      GPIO connected to CFG2 pin for voltage selection in hardware mode.
+
+  cfg3-gpios:
+    type: phandle-array
+    required: false
+    description: |
+      GPIO connected to CFG3 pin for voltage selection in hardware mode.
+
+  mode:
+    type: string
+    required: false
+    default: "i2c"
+    description: |
+      Operating mode: "i2c" for I2C control, "gpio" for GPIO voltage selection.
+
+  voltage-request:
+    type: int
+    required: false
+    default: 5000
+    description: |
+      Default requested voltage in mV when in GPIO mode.
+      Valid values: 5000, 9000, 12000, 15000, 20000, 28000.

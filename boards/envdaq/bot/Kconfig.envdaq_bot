@@ -1,0 +1,8 @@
+# EnvDaq bot
+# Copyright (c) 2026 Yongci
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_ENVDAQ_BOT
+	select SOC_ESP32_C6_WROOM_1U_N4
+	select SOC_ESP32C6_HPCORE if BOARD_ENVDAQ_BOT_ESP32C6_HPCORE
+	select SOC_ESP32C6_LPCORE if BOARD_ENVDAQ_BOT_ESP32C6_LPCORE
