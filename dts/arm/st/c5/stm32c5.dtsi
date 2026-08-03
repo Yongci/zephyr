@@ -174,7 +174,7 @@
 		};
 
 		mac: ethernet@40028000 {
-			compatible = "st,stm32-ethernet";
+			compatible = "st,stm32-ethernet", "snps,dwmac";
 			reg = <0x40028000 0x1400>;
 			clock-names = "mac-clk-int", "stm-eth", "mac-clk-tx", "mac-clk-rx",
 				      "eth1clk-sel", "eth1clkdiv-sel", "eth1refclk-sel";
@@ -193,6 +193,10 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 				status = "disabled";
+			};
+
+			ptp_clock: ptp-clock {
+				compatible = "snps,dwmac-ptp-clock";
 			};
 		};
 
@@ -353,6 +357,7 @@
 			#address-cells = <1>;
 			#size-cells = <1>;
 			reg = <0x42020000 0x2000>;
+			ranges;
 
 			gpioa: gpio@42020000 {
 				compatible = "st,stm32-gpio";

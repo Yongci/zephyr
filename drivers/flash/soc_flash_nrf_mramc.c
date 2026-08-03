@@ -12,6 +12,7 @@
 
 #if defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)
 #include "tfm_ioctl_core_api.h"
+#include <soc_secure.h>
 #else
 #include <nrfx_mramc.h>
 #endif
@@ -20,8 +21,8 @@ LOG_MODULE_REGISTER(flash_nrf_mramc, CONFIG_FLASH_LOG_LEVEL);
 
 #define DT_DRV_COMPAT nordic_nrf_mramc
 
-#define MRAM_NODE		  DT_NODELABEL(cpuapp_mram)
-#define MRAM_BASE		 DT_REG_ADDR(MRAM_NODE)
+#define MRAM_NODE		  DT_INST(0, soc_nv_flash)
+#define MRAM_BASE		  DT_REG_ADDR(MRAM_NODE)
 #define MRAM_SIZE		  DT_REG_SIZE(MRAM_NODE)
 
 BUILD_ASSERT(MRAM_BASE <= UINT32_MAX, "MRAM_BASE is not in size of uint32_t");
@@ -167,6 +168,10 @@ static int nrf_mramc_read(const struct device *dev, off_t offset, void *data, si
 	/* Buffer read number of bytes and store in data pointer.
 	 */
 #if defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)
+	if (soc_secure_flash_range_is_secure((uintptr_t)addr, len)) {
+		LOG_DBG("read secure mem: %x:%zu", addr, len);
+		return soc_secure_mem_read(data, (void *)addr, len);
+	}
 	memcpy(data, (void *)addr, len);
 #else
 	nrfx_mramc_buffer_read(data, addr, len);

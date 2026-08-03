@@ -168,9 +168,6 @@ static void net_post_init(void)
 #if defined(CONFIG_NET_ARP)
 	net_arp_init();
 #endif
-#if defined(CONFIG_NET_LLDP)
-	net_lldp_init();
-#endif
 #if defined(CONFIG_NET_GPTP)
 	net_gptp_init();
 #endif
@@ -491,13 +488,17 @@ err:
 
 static void net_rx(struct net_if *iface, struct net_pkt *pkt)
 {
-	size_t pkt_len;
+	/* Only walk the fragment chain to get the packet length if
+	 * someone is going to use it.
+	 */
+	if (IS_ENABLED(CONFIG_NET_STATISTICS) ||
+	    CONFIG_NET_CORE_LOG_LEVEL >= LOG_LEVEL_DBG) {
+		size_t pkt_len = net_pkt_get_len(pkt);
 
-	pkt_len = net_pkt_get_len(pkt);
+		NET_DBG("Received pkt %p len %zu", pkt, pkt_len);
 
-	NET_DBG("Received pkt %p len %zu", pkt, pkt_len);
-
-	net_stats_update_bytes_recv(iface, pkt_len);
+		net_stats_update_bytes_recv(iface, pkt_len);
+	}
 
 	if (IS_ENABLED(CONFIG_NET_LOOPBACK)) {
 #ifdef CONFIG_NET_L2_DUMMY
@@ -525,7 +526,7 @@ void net_process_rx_packet(struct net_pkt *pkt)
 
 static void net_queue_rx(struct net_if *iface, struct net_pkt *pkt)
 {
-	size_t len = net_pkt_get_len(pkt);
+	size_t len = IS_ENABLED(CONFIG_NET_STATISTICS) ? net_pkt_get_len(pkt) : 0;
 	uint8_t prio = net_pkt_priority(pkt);
 	uint8_t tc = net_rx_priority2tc(prio);
 
@@ -620,8 +621,6 @@ static inline void l3_init(void)
 	net_ipv4_init();
 	net_ipv6_init();
 
-	net_ipv4_autoconf_init();
-
 	if (IS_ENABLED(CONFIG_NET_UDP) ||
 	    IS_ENABLED(CONFIG_NET_TCP) ||
 	    IS_ENABLED(CONFIG_NET_SOCKETS_PACKET) ||
@@ -664,32 +663,28 @@ static void init_rx_queues(void)
 	 */
 	net_if_init();
 
-	/* This will take the interface up and start everything. */
-	net_if_post_init();
-
-	/* Things to init after network interface is working */
+	/* Things to init after network interface is initialized */
 	net_post_init();
 }
 
-static inline int services_init(void)
+static inline void services_init(void)
 {
 	int status;
 
 	socket_service_init();
 
 	status = net_dhcpv4_init();
-	if (status) {
-		return status;
+	if (status != 0) {
+		return;
 	}
 
 	status = net_dhcpv6_init();
 	if (status != 0) {
-		return status;
+		return;
 	}
 
 	net_dhcpv4_server_init();
 
-	dns_dispatcher_init();
 	dns_init_resolver();
 	mdns_init_responder();
 
@@ -700,8 +695,6 @@ static inline int services_init(void)
 	net_quic_init();
 
 	net_shell_init();
-
-	return status;
 }
 
 static int net_init(void)
@@ -712,15 +705,18 @@ static int net_init(void)
 
 	net_pkt_init();
 
-	net_context_init();
-
 	l3_init();
 
 	net_mgmt_event_init();
 
 	init_rx_queues();
 
-	return services_init();
+	services_init();
+
+	/* This will take all interfaces up, that have autostart enabled. */
+	net_if_post_init();
+
+	return 0;
 }
 
 SYS_INIT(net_init, POST_KERNEL, CONFIG_NET_INIT_PRIO);

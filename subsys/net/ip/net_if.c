@@ -1980,8 +1980,16 @@ struct net_if_addr *net_if_ipv6_addr_lookup_raw(const uint8_t *addr,
 				}
 
 				ifaddr = &ipv6->unicast[i];
-				net_if_unlock(iface);
-				goto out;
+
+				/* If the interface is up, return the result immediately.
+				 * Otherwise, keep searching and return the result only after
+				 * checking there's no other interface that is up with given
+				 * address.
+				 */
+				if (net_if_is_up(iface)) {
+					net_if_unlock(iface);
+					goto out;
+				}
 			}
 		}
 
@@ -3353,6 +3361,10 @@ static struct net_in6_addr *net_if_ipv6_get_best_match(struct net_if *iface,
 	uint8_t len, temp_addr_len = 0;
 	bool ret;
 
+	if (!net_if_is_up(iface)) {
+		return src;
+	}
+
 	net_if_lock(iface);
 
 	ipv6 = iface->config.ip.ipv6;
@@ -3913,14 +3925,10 @@ bool net_if_ipv4_addr_onlink(struct net_if **iface, const struct net_in_addr *ad
 	struct net_if *best_iface = NULL;
 	uint8_t best_len = 0U;
 
-	if (iface == NULL || *iface == NULL) {
-		return false;
-	}
-
 	STRUCT_SECTION_FOREACH(net_if, tmp) {
 		struct net_if_ipv4 *ipv4;
 
-		if (*iface != tmp) {
+		if (iface != NULL && *iface != NULL && *iface != tmp) {
 			continue;
 		}
 
@@ -3962,7 +3970,10 @@ bool net_if_ipv4_addr_onlink(struct net_if **iface, const struct net_in_addr *ad
 	}
 
 	if (best_iface != NULL) {
-		*iface = best_iface;
+		if (iface != NULL) {
+			*iface = best_iface;
+		}
+
 		return true;
 	}
 
@@ -4151,6 +4162,10 @@ static struct net_in_addr *net_if_ipv4_get_best_match(struct net_if *iface,
 	struct net_if_ipv4 *ipv4;
 	struct net_in_addr *src = NULL;
 	uint8_t len;
+
+	if (!net_if_is_up(iface)) {
+		return src;
+	}
 
 	net_if_lock(iface);
 
@@ -4411,8 +4426,16 @@ struct net_if_addr *net_if_ipv4_addr_lookup_raw(const uint8_t *addr,
 				}
 
 				ifaddr = &ipv4->unicast[i].ipv4;
-				net_if_unlock(iface);
-				goto out;
+
+				/* If the interface is up, return the result immediately.
+				 * Otherwise, keep searching and return the result only after
+				 * checking there's no other interface that is up with given
+				 * address.
+				 */
+				if (net_if_is_up(iface)) {
+					net_if_unlock(iface);
+					goto out;
+				}
 			}
 		}
 
