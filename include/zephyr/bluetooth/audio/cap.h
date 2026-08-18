@@ -67,7 +67,7 @@ struct bt_cap_unicast_group;
  * Service instance.
  *
  * This shall only be done as a server, and requires
- * @kconfig{BT_CAP_ACCEPTOR_SET_MEMBER}. If @kconfig{BT_CAP_ACCEPTOR_SET_MEMBER}
+ * @kconfig{CONFIG_BT_CAP_ACCEPTOR_SET_MEMBER}. If @kconfig{CONFIG_BT_CAP_ACCEPTOR_SET_MEMBER}
  * is not enabled, the Common Audio Service will by statically registered.
  *
  * @param[in]  param     Coordinated Set Identification Service register
@@ -605,7 +605,10 @@ int bt_cap_initiator_unicast_audio_start(const struct bt_cap_unicast_audio_start
  *
  * @param param Update parameters.
  *
- * @return 0 on success or negative error value on failure.
+ * @retval 0 Success
+ * @retval -EBUSY CAP procedure is already in progress
+ * @retval -EINVAL @p param contains invalid parameters
+ * @retval -EALREADY Metadata is already set for all the streams
  */
 int bt_cap_initiator_unicast_audio_update(const struct bt_cap_unicast_audio_update_param *param);
 
@@ -1068,10 +1071,10 @@ int bt_cap_handover_broadcast_to_unicast(
 /** Callback structure for CAP procedures */
 struct bt_cap_commander_cb {
 	/**
-	 * @brief Callback for bt_cap_initiator_unicast_discover().
+	 * @brief Callback for bt_cap_commander_discover().
 	 *
 	 * @param conn      The connection pointer supplied to
-	 *                  bt_cap_initiator_unicast_discover().
+	 *                  bt_cap_commander_discover().
 	 * @param err       0 if Common Audio Service was found else -ENODATA.
 	 * @param member    Pointer to the set member. NULL if err != 0.
 	 * @param csis_inst The Coordinated Set Identification Service if

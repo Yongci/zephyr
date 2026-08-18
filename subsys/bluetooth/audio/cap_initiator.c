@@ -1358,7 +1358,7 @@ bool bt_cap_initiator_valid_unicast_audio_start_param(
 	return true;
 }
 
-static void cap_initiator_unicast_audio_proc_complete(struct bt_cap_common_proc *active_proc)
+void cap_initiator_unicast_audio_proc_complete(struct bt_cap_common_proc *active_proc)
 {
 	enum bt_cap_common_proc_type proc_type;
 	struct bt_conn *failed_conn;
@@ -2270,12 +2270,34 @@ int bt_cap_initiator_unicast_audio_update(const struct bt_cap_unicast_audio_upda
 	struct bt_cap_initiator_proc_param *proc_param;
 	struct bt_cap_common_proc *active_proc;
 	struct bt_bap_stream *bap_stream;
+	bool metadata_is_set = true;
 	const uint8_t *meta;
 	size_t meta_len;
 	int err;
 
 	if (!valid_unicast_audio_update_param(param)) {
 		return -EINVAL;
+	}
+
+	for (size_t i = 0U; i < param->count; i++) {
+		const struct bt_cap_unicast_audio_update_stream_param *stream_param =
+			&param->stream_params[i];
+		const struct bt_cap_stream *cap_stream = stream_param->stream;
+
+		if (!util_eq(cap_stream->bap_stream.codec_cfg->meta,
+			     cap_stream->bap_stream.codec_cfg->meta_len, stream_param->meta,
+			     stream_param->meta_len)) {
+
+			metadata_is_set = false;
+			break;
+		}
+
+		LOG_DBG("param->stream_params[%zu].meta is already set for stream %p", i,
+			cap_stream);
+	}
+
+	if (metadata_is_set) {
+		return -EALREADY;
 	}
 
 	active_proc = bt_cap_common_get_active_proc();

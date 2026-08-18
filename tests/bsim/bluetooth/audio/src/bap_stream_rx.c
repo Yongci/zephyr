@@ -75,7 +75,8 @@ void bap_stream_rx_recv_cb(struct bt_bap_stream *stream, const struct bt_iso_rec
 		log_stream_err(test_stream, info, buf);
 
 		if (test_stream->valid_rx_cnt > 1U) {
-			FAIL("Duplicated timestamp received: %u\n", test_stream->last_info.ts);
+			FAIL("Duplicated timestamp received after %u valid RX: %u\n",
+			     test_stream->valid_rx_cnt, test_stream->last_info.ts);
 		}
 	}
 
@@ -83,7 +84,8 @@ void bap_stream_rx_recv_cb(struct bt_bap_stream *stream, const struct bt_iso_rec
 		log_stream_err(test_stream, info, buf);
 
 		if (test_stream->valid_rx_cnt > 1U) {
-			FAIL("Duplicated PSN received: %u\n", test_stream->last_info.seq_num);
+			FAIL("Duplicated PSN received after %u valid RX: %u\n",
+			     test_stream->valid_rx_cnt, test_stream->last_info.seq_num);
 		}
 	}
 
@@ -93,15 +95,15 @@ void bap_stream_rx_recv_cb(struct bt_bap_stream *stream, const struct bt_iso_rec
 
 		if (test_stream->valid_rx_cnt > 1U &&
 		    !TEST_FLAG(test_stream->flag_audio_received)) {
-			FAIL("ISO receive error\n");
+			FAIL("ISO receive error after %u valid RX\n", test_stream->valid_rx_cnt);
 		}
 	}
 
 	if (info->flags & BT_ISO_FLAGS_LOST) {
 		log_stream_err(test_stream, info, buf);
 
-		if (test_stream->valid_rx_cnt > 1U) {
-			FAIL("ISO receive lost\n");
+		if (!TEST_FLAG(test_stream->stopping) && test_stream->valid_rx_cnt > 1U) {
+			FAIL("ISO receive lost after %u valid RX\n", test_stream->valid_rx_cnt);
 		}
 	}
 }
