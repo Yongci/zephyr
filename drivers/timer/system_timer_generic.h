@@ -49,7 +49,7 @@
  * arming primitive rather than tracking it separately. The core does not model
  * interrupt masking.
  *
- *   - static inline uint32_t/uint64_t timer_driver_cycle_get(void): the hardware cycle
+ *   - static uint32_t/uint64_t timer_driver_cycle_get(void): the hardware cycle
  *     count. Its rate is TIMER_CORE_CYCLES_PER_SEC (see the knobs below), by default the
  *     kernel system clock rate. Return the raw counter, even a narrow one that wraps:
  *     declare its width with TIMER_CORE_COUNTER_WIDTH and the core masks every delta to
@@ -60,7 +60,7 @@
  *     spares a 32-bit target the widening.
  *
  *   - the arming primitive for the chosen backend:
- *       COMPARE: static inline void timer_driver_set_compare(uint32_t/uint64_t cycles)
+ *       COMPARE: static void timer_driver_set_compare(uint32_t/uint64_t cycles)
  *                Write the comparator so an interrupt fires when the counter
  *                reaches @p cycles, a full-width cycle count. The argument width
  *                is the driver's: a 64-bit comparator takes uint64_t; a 32-bit
@@ -69,7 +69,7 @@
  *                that is wanted here: with COMPARE_ORDERED the hardware handles a
  *                past target itself, and with COMPARE_EXACT the core wraps this
  *                in the verify loop that deals with it.
- *       RELOAD:  static inline void timer_driver_set_reload(uint32_t/uint64_t cycles)
+ *       RELOAD:  static void timer_driver_set_reload(uint32_t/uint64_t cycles)
  *                Fire an interrupt after @p cycles more cycles. The core has
  *                already clamped @p cycles to [TIMER_CORE_ALARM_MIN_CYCLES,
  *                TIMER_CORE_ALARM_MAX_CYCLES]. The argument width is the driver's:
@@ -275,10 +275,18 @@ typedef uint64_t timer_core_cycles_t;
 #endif
 
 /*
- * Furthest ahead of the last announce that the core will arm: what the counter
- * can still resolve, or what the alarm can express, whichever binds first.
+ * Furthest ahead of the last announce that unannounced time may run: what the
+ * counter can still resolve. Nothing else bounds it, the alarm's reach being a
+ * bound on one arm rather than on the total.
  */
-#define TIMER_CORE_MAX_UNANNOUNCED_CYCLES                                                          \
+#define TIMER_CORE_MAX_UNANNOUNCED_CYCLES TIMER_CORE_COUNTER_SAFE_SPAN
+
+/*
+ * Furthest one arm reaches: what the alarm can express, never past what the
+ * counter can resolve. A deadline beyond this is walked to over several arms,
+ * each announcing nothing until the last.
+ */
+#define TIMER_CORE_MAX_ARM_CYCLES                                                                  \
 	((timer_core_cycles_t)MIN((uint64_t)TIMER_CORE_COUNTER_SAFE_SPAN,                          \
 				  (uint64_t)TIMER_CORE_ALARM_MAX_CYCLES))
 
@@ -356,6 +364,18 @@ static timer_core_ticks_t timer_core_max_span_ticks;
 #define TIMER_CORE_MAX_SPAN_TICKS timer_core_max_span_ticks
 #else
 #define TIMER_CORE_MAX_SPAN_TICKS (TIMER_CORE_MAX_UNANNOUNCED_CYCLES / TIMER_CORE_CYC_PER_TICK)
+#if !defined(TIMER_CORE_CHECK_CYC_PER_TICK_AT_INIT)
+/* A tick wider than the counter can resolve leaves the masked delta ambiguous,
+ * which no amount of re-arming recovers, so catch it here rather than at run
+ * time. The alarm's reach is deliberately not part of this: a tick that only
+ * outruns the arming register still resolves, it just takes more than one arm
+ * to reach. This needs the rate to be a build constant, so the cases where it
+ * is not are checked in timer_core_init() instead.
+ */
+BUILD_ASSERT(TIMER_CORE_COUNTER_SAFE_SPAN >= TIMER_CORE_CYC_PER_TICK,
+	     "a tick is longer than the counter can span: raise "
+	     "CONFIG_SYS_CLOCK_TICKS_PER_SEC, or slow the counter");
+#endif
 #endif
 
 #if defined(TIMER_CORE_BACKEND_RELOAD)
@@ -524,6 +544,15 @@ static void timer_core_arm(uint32_t ticks)
 	 */
 	timer_core_cycles_t rel = (want > done) ? (want - done) : 0;
 
+	/* Only where the alarm binds before the counter does; the span clamp
+	 * above already holds `rel` inside the counter's reach, so this folds
+	 * away for hardware whose alarm covers the whole span.
+	 */
+	if ((TIMER_CORE_MAX_ARM_CYCLES < TIMER_CORE_MAX_UNANNOUNCED_CYCLES) &&
+	    (rel > TIMER_CORE_MAX_ARM_CYCLES)) {
+		rel = TIMER_CORE_MAX_ARM_CYCLES;
+	}
+
 	if (rel < TIMER_CORE_ALARM_MIN_CYCLES) {
 		/*
 		 * The announce is due (or overdue): fire as soon as the floor
@@ -565,8 +594,13 @@ static void timer_core_arm(uint32_t ticks)
 	if ((ticks <= span) && (timer_core_last_elapsed <= (span - ticks))) {
 		span = timer_core_last_elapsed + ticks;
 	}
-	timer_core_set_compare(timer_core_last_cycle +
-			       (timer_core_cycles_t)span * TIMER_CORE_CYC_PER_TICK);
+	timer_core_cycles_t offset = (timer_core_cycles_t)span * TIMER_CORE_CYC_PER_TICK;
+
+	if ((TIMER_CORE_MAX_ARM_CYCLES < TIMER_CORE_MAX_UNANNOUNCED_CYCLES) &&
+	    (offset > TIMER_CORE_MAX_ARM_CYCLES)) {
+		offset = TIMER_CORE_MAX_ARM_CYCLES;
+	}
+	timer_core_set_compare(timer_core_last_cycle + offset);
 #else
 	/* Nothing to narrow to: the span and the baseline are the same width, so
 	 * form the deadline directly and let the clamp subtract the baseline off.
@@ -574,8 +608,8 @@ static void timer_core_arm(uint32_t ticks)
 	uint64_t deadline =
 		(timer_core_last_tick + timer_core_last_elapsed + ticks) * TIMER_CORE_CYC_PER_TICK;
 
-	if ((deadline - timer_core_last_cycle) > TIMER_CORE_MAX_UNANNOUNCED_CYCLES) {
-		deadline = timer_core_last_cycle + TIMER_CORE_MAX_UNANNOUNCED_CYCLES;
+	if ((deadline - timer_core_last_cycle) > TIMER_CORE_MAX_ARM_CYCLES) {
+		deadline = timer_core_last_cycle + TIMER_CORE_MAX_ARM_CYCLES;
 	}
 	timer_core_set_compare(deadline);
 #endif
@@ -834,6 +868,8 @@ static inline void timer_core_init(void)
 	 * non-zero check the constant case gets at build time happens here instead.
 	 */
 	__ASSERT(TIMER_CORE_CYC_PER_TICK != 0, "timer counter rate is below the tick rate");
+	__ASSERT(TIMER_CORE_COUNTER_SAFE_SPAN >= TIMER_CORE_CYC_PER_TICK,
+		 "a tick is longer than the counter can span");
 #endif
 	/* The counter read is inside the counter's width, so the tick count it
 	 * divides down to and the cycle count that multiplies back up both are too.

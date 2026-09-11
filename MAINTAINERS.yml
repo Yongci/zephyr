@@ -472,6 +472,8 @@ Arduino Platforms:
     - boards/shields/arduino_*/
     - drivers/*/*modulino*
     - dts/vendor/arduino/
+  labels:
+    - "platform: Arduino"
 
 Authentication:
   status: maintained
@@ -645,6 +647,7 @@ Bluetooth Audio:
     - "area: Bluetooth"
   tests:
     - bluetooth.audio
+    - bluetooth.audio_samples
     - sample.bluetooth.audio
 
 Bluetooth Classic:
@@ -690,6 +693,7 @@ Bluetooth Controller:
     - doc/services/connectivity/bluetooth/img/ctlr*
     - doc/services/connectivity/bluetooth/api/controller.rst
     - include/zephyr/bluetooth/controller.h
+    - samples/bluetooth/hci_*/
     - subsys/bluetooth/common/
     - subsys/bluetooth/controller/
     - subsys/bluetooth/crypto/
@@ -699,9 +703,17 @@ Bluetooth Controller:
     - "area: Bluetooth Controller"
     - "area: Bluetooth"
   tests:
-    - bluetooth.controller
     - bluetooth
+    - bluetooth.controller
     - bluetooth.ll
+    - sample.bluetooth.hci_ipc
+    - sample.bluetooth.hci_pwr_ctrl
+    - sample.bluetooth.hci_spi
+    - sample.bluetooth.hci_uart
+    - sample.bluetooth.hci_uart_3wire
+    - sample.bluetooth.hci_uart_async
+    - sample.bluetooth.hci_usb
+    - sample.bluetooth.hci_vs_scan_req
 
 Bluetooth HCI:
   status: maintained
@@ -874,7 +886,7 @@ Bluetooth Qualification:
   tests:
     - bluetooth
     - bluetooth.general
-    - bluetooth.tester_bsim
+    - bluetooth.tester
 
 Board/SoC configuration:
   status: maintained
@@ -1008,6 +1020,7 @@ Build system:
     - version.h.in
     - scripts/schemas/arch-schema.yaml
     - scripts/schemas/board-schema.yaml
+    - scripts/schemas/module-schema.yaml
     - scripts/schemas/soc-schema.yaml
     - scripts/list_shields.py
     - scripts/snippets.py
@@ -1247,8 +1260,9 @@ DAP:
 DFU:
   status: maintained
   maintainers:
-    - de-nordic
     - nordicjm
+  collaborators:
+    - de-nordic
   files:
     - include/zephyr/dfu/
     - subsys/dfu/
@@ -1357,12 +1371,13 @@ Device Driver Model:
     - init
 
 Devicetree:
-  status: odd fixes
+  status: maintained
+  maintainers:
+    - maass-hamburg
   collaborators:
     - mbolivar
     - rruuaanng
     - kylebonnici
-    - maass-hamburg
   files-regex:
     - ^dts/bindings/.*zephyr.*
     - ^dts/bindings/[^,]+$
@@ -1467,6 +1482,8 @@ Documentation:
     - nashif
     - carlescufi
   files:
+    - AGENTS.md
+    - CLAUDE.md
     - CODE_OF_CONDUCT.md
     - CONTRIBUTING.rst
     - doc/glossary.rst
@@ -1544,6 +1561,7 @@ Documentation Infrastructure:
     - kv2019i
     - TomasBarakNXP
     - Peterson-Brett
+    - rgallaispou
   files:
     - drivers/audio/
     - include/zephyr/audio/
@@ -1608,6 +1626,7 @@ Documentation Infrastructure:
     - boards/shields/mikroe_mcp251x_click/
     - boards/shields/mikroe_mcp251xfd_click/
     - boards/shields/tcan4550evm/
+    - cmake/emu/qemu/can.cmake
     - doc/services/connectivity/canbus/
     - doc/hardware/peripherals/can/
     - drivers/can/
@@ -2216,6 +2235,14 @@ Documentation Infrastructure:
     - tests/boards/*/i2c/
     - tests/drivers/*/i2c/
     - samples/drivers/i2c/
+  file-groups:
+    - name: I2C driver
+      defer-to-other-areas: true
+      files:
+        - drivers/i2c/i2c_*.c
+        - drivers/i2c/Kconfig.*
+        - dts/bindings/i2c/
+        - include/zephyr/dt-bindings/i2c/
   labels:
     - "area: I2C"
   tests:
@@ -2254,6 +2281,13 @@ Documentation Infrastructure:
     - include/zephyr/drivers/i3c/
     - doc/hardware/peripherals/i3c.rst
     - tests/drivers/build_all/i3c/
+  file-groups:
+    - name: I3C driver
+      defer-to-other-areas: true
+      files:
+        - drivers/i3c/i3c_*.c
+        - drivers/i3c/Kconfig.*
+        - dts/bindings/i3c/
   labels:
     - "area: I3C"
   tests:
@@ -2654,6 +2688,21 @@ Documentation Infrastructure:
   tests:
     - drivers.pinctrl
 
+"Drivers: Pulse IO":
+  status: maintained
+  maintainers:
+    - sylvioalves
+  files:
+    - drivers/pulse_io/
+    - dts/bindings/pulse-io/
+    - include/zephyr/drivers/pulse_io.h
+    - tests/drivers/pulse_io/
+    - doc/hardware/peripherals/pulse_io.rst
+  labels:
+    - "area: Pulse IO"
+  tests:
+    - drivers.pulse_io
+
 "Drivers: RTC":
   status: maintained
   maintainers:
@@ -2860,6 +2909,15 @@ Documentation Infrastructure:
     - doc/hardware/peripherals/uart.rst
     - include/zephyr/drivers/serial/
     - include/zephyr/drivers/uart_pipe.h
+  file-groups:
+    - name: Serial/UART driver
+      defer-to-other-areas: true
+      files:
+        - drivers/serial/uart_*.c
+        - drivers/serial/uart_*.h
+        - drivers/serial/Kconfig.*
+        - dts/bindings/serial/
+        - include/zephyr/dt-bindings/uart/
   labels:
     - "area: UART"
   tests:
@@ -3200,6 +3258,8 @@ Espressif Platforms:
   files:
     - drivers/*/*esp32*.c
     - boards/espressif/
+    - cmake/emu/espressif_qemu.cmake
+    - cmake/emu/espressif_qemu/
     - soc/espressif/
     - dts/*/espressif/
     - dts/bindings/*/*esp32*
@@ -3207,11 +3267,19 @@ Espressif Platforms:
     - tests/boards/espressif/
     - drivers/*/*esp32*/
     - drivers/wifi/esp_hosted/
+    - drivers/wifi/esp_hosted_mcu/
     - drivers/wifi/esp_at/
+    - drivers/misc/esp_hosted_mcu/
+    - drivers/bluetooth/hci/hci_esp_hosted_mcu.c
   file-groups:
     - name: Espressif hosted Wi-Fi driver
       files:
         - drivers/wifi/esp_hosted
+    - name: Espressif esp-hosted transport core
+      files:
+        - drivers/misc/esp_hosted_mcu
+        - drivers/wifi/esp_hosted_mcu
+        - drivers/bluetooth/hci/hci_esp_hosted_mcu.c
     - name: Espressif ESP-AT Wi-Fi driver
       files:
         - drivers/wifi/esp_at
@@ -3439,6 +3507,7 @@ Infineon Platforms:
     - MerinMGeorge
     - ifx-rmcs
     - parthitce
+    - stites-infineon
   files:
     - boards/cypress/
     - boards/infineon/
@@ -3795,7 +3864,6 @@ LiteX Platforms:
     - maass-hamburg
   collaborators:
     - kgugala
-    - mateusz-holenko
   files:
     - boards/enjoydigital/litex_vexriscv/
     - drivers/*/*litex*
@@ -4175,6 +4243,15 @@ NEORV32 platform:
   tests:
     - boards.neorv32
 
+NUCODE Platforms:
+  status: maintained
+  maintainers:
+    - manjae-cho
+  files:
+    - boards/nucode/
+  labels:
+    - "platform: NUCODE"
+
 NVMEM:
   status: maintained
   maintainers:
@@ -4336,7 +4413,7 @@ NXP Platforms (MCU):
       files:
         - boards/nxp/mimxrt*/
         - soc/nxp/imxrt/
-        - dts/arm/nxp/*rt*
+        - dts/arm/nxp/imxrt/
     - name: NXP MCX
       collaborators:
         - peterwangsz
@@ -4345,15 +4422,16 @@ NXP Platforms (MCU):
       files:
         - boards/nxp/frdm_mcx*/
         - soc/nxp/mcx/
-        - dts/arm/nxp/*mcx*
+        - dts/arm/nxp/mcx/
         - boards/nxp/mcx_*/
     - name: NXP Kinetis
       collaborators:
         - mmahadevan108
       files:
         - boards/nxp/frdm_k*/
+        - boards/nxp/twr_kv*/
         - soc/nxp/kinetis/
-        - dts/arm/nxp/kinetis/nxp_k*
+        - dts/arm/nxp/kinetis/
     - name: NXP LPC
       collaborators:
         - mmahadevan108
@@ -4428,6 +4506,7 @@ NXP Platforms (MCU):
         - henrikbrixandersen
       files:
         - boards/nxp/twr_ke18f/
+        - dts/arm/nxp/kinetis/ke1xf/
         - soc/nxp/kinetis/ke1xf/
       files-regex:
         - .*ke1*f.*
@@ -4436,7 +4515,7 @@ NXP Platforms (MCU):
         - iia
       files:
         - boards/nxp/frdm_k32l2b3/
-        - dts/arm/nxp/kinetis/nxp_k32l2b3.dtsi
+        - dts/arm/nxp/kinetis/k32lx/
         - soc/nxp/kinetis/k32lx/
   labels:
     - "platform: NXP MCU"
@@ -4771,7 +4850,7 @@ Networking:
   tests:
     - net.http
 
-"Networking: LWM2M":
+"Networking: LwM2M":
   status: maintained
   maintainers:
     - rlubos
@@ -4782,7 +4861,7 @@ Networking:
     - tests/net/lib/lwm2m/
     - subsys/net/lib/lwm2m/
   labels:
-    - "area: LWM2M"
+    - "area: LwM2M"
   tests:
     - net.lwm2m
     - sample.net.lwm2m_client
@@ -5361,6 +5440,8 @@ Raspberry Pi Pico Platforms:
     - drivers/*/*rpi_pico*/
     - drivers/*/*rpi_pico*.c
     - soc/raspberrypi/
+  files-regex:
+    - ^include/.*rpi[-_]pico.*
   labels:
     - "platform: Raspberry Pi Pico"
 
@@ -6094,6 +6175,7 @@ TI K3 Platforms:
     - vaishnavachath
     - natto1784
     - Kronosblaster
+    - soumya-TI
   files:
     - boards/ti/*am2*/
     - boards/ti/*am6*/
@@ -6124,6 +6206,7 @@ TI MSPM Platforms:
     - karthi012
     - Girinandha-M
     - santhosh-c-c
+    - soumya-TI
   files:
     - soc/ti/mspm/
     - boards/ti/*mspm*/
@@ -6164,6 +6247,21 @@ TI Stellaris Platforms:
     - dts/arm/ti/lm3s6965.dtsi
   labels:
     - "platform: TI Stellaris"
+
+TI Tiva C Platforms:
+  status: maintained
+  maintainers:
+    - srisurya1
+  files:
+    - soc/ti/tiva_c/
+    - boards/ti/tm4c123gxl/
+    - dts/arm/ti/tm4c*
+    - dts/bindings/*/*tiva-c*
+    - drivers/*/*tiva_c*
+    - include/zephyr/dt-bindings/pinctrl/tiva-c*
+    - modules/Kconfig.tiva_c
+  labels:
+    - "platform: TI Tiva C"
 
 Task Watchdog:
   status: maintained
@@ -6230,7 +6328,7 @@ Testing with Renode:
   # This area is to be converted to a subarea
   status: odd fixes
   collaborators:
-    - mateusz-holenko
+    - PiotrZierhoffer
     - fkokosinski
   files:
     - cmake/emu/renode.cmake
@@ -6326,6 +6424,7 @@ Tracing:
   files:
     - subsys/tracing/
     - scripts/tracing/
+    - scripts/tests/tracing/
     - include/zephyr/tracing/
     - subsys/timing/
     - samples/subsys/tracing/
@@ -6414,6 +6513,8 @@ USB-C:
   maintainers:
     - sambhurst
     - keith-zephyr
+  collaborators:
+    - ncadieux
   files:
     - drivers/usb_c/
     - dts/bindings/usb-c/
@@ -6906,6 +7007,7 @@ West:
     - lauracarlesso
     - MerinMGeorge
     - ifx-rmcs
+    - stites-infineon
   files:
     - modules/Kconfig.infineon
     - modules/hal_infineon/
@@ -7143,6 +7245,8 @@ West:
     - vaishnavachath
     - ssekar15
     - d-philpot
+  collaborators:
+    - Aman-Lachhiramka-ti
   files: []
   labels:
     - "platform: TI"
@@ -7564,8 +7668,8 @@ West:
     - libraries.uoscore.oscore_tests
 
 "West project: zcbor":
-  status: maintained
-  maintainers:
+  status: odd fixes
+  collaborators:
     - de-nordic
   files:
     - modules/zcbor/
@@ -7686,7 +7790,6 @@ hawkBit:
   files:
     - subsys/mgmt/hawkbit/
     - include/zephyr/mgmt/hawkbit/
-    - include/zephyr/mgmt/hawkbit.h
     - samples/subsys/mgmt/hawkbit/
   labels:
     - "area: hawkBit"

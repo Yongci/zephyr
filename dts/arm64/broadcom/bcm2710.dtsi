@@ -79,6 +79,12 @@
 			status = "okay";
 		};
 
+		rng: rng@3f104000 {
+			compatible = "brcm,bcm2835-rng";
+			reg = <0x3f104000 0x10>;
+			status = "okay";
+		};
+
 		pinctrl: pin-controller@3f200000 {
 			compatible = "brcm,bcm2711-pinctrl";
 			reg = <0x3f200000 0xf4>;
@@ -123,6 +129,14 @@
 			interrupts = <BCM2835_IRQ_AUX IRQ_TYPE_LEVEL 0>;
 			clock-frequency = <DT_FREQ_M(250)>;
 			status = "disabled";
+		};
+
+		mbox0: mbox@3f00b880 {
+			compatible = "brcm,bcm2711-mbox";
+			reg = <0x3f00b880 0x40>;
+			interrupts = <BCM2835_IRQ_ARM_MAILBOX IRQ_TYPE_LEVEL 0>;
+			#mbox-cells = <1>;
+			status = "okay";
 		};
 
 		/*

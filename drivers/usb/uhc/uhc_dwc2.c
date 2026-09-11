@@ -292,8 +292,9 @@ static inline int dwc2_core_init_host_gusbcfg(const struct device *dev)
 	uint32_t ghwcfg4 = sys_read32((mem_addr_t)&base->ghwcfg4);
 	const k_timepoint_t timepoint = sys_timepoint_calc(K_MSEC(100));
 
-	/* Enable Host mode */
-	sys_set_bits((mem_addr_t)&base->gusbcfg, USB_DWC2_GUSBCFG_FORCEHSTMODE);
+	/* Force host mode as we do not support mode changes yet */
+	gusbcfg |= USB_DWC2_GUSBCFG_FORCEHSTMODE;
+	sys_write32(gusbcfg, (mem_addr_t)&base->gusbcfg);
 
 	/* Wait until core is in host mode */
 	while ((sys_read32((mem_addr_t)&base->gintsts) & USB_DWC2_GINTSTS_CURMOD) == 0) {
@@ -344,6 +345,7 @@ static inline int dwc2_core_init_host_gusbcfg(const struct device *dev)
 				gusbcfg &= ~USB_DWC2_GUSBCFG_PHYIF_16_BIT;
 			}
 		}
+
 		sys_write32(gusbcfg, (mem_addr_t)&base->gusbcfg);
 	}
 
@@ -609,8 +611,7 @@ static int port_reset(const struct device *dev)
 
 static int port_suspend(const struct device *const dev)
 {
-	const struct uhc_dwc2_config *const config = dev->config;
-	struct usb_dwc2_reg *const base = config->base;
+	struct usb_dwc2_reg *const base = uhc_dwc2_get_base(dev);
 	uint32_t hprt;
 
 	hprt = sys_read32((mem_addr_t)&base->hprt);
@@ -644,8 +645,7 @@ static int port_suspend(const struct device *const dev)
 
 static int port_resume(const struct device *const dev)
 {
-	const struct uhc_dwc2_config *const config = dev->config;
-	struct usb_dwc2_reg *const base = config->base;
+	struct usb_dwc2_reg *const base = uhc_dwc2_get_base(dev);
 	enum uhc_event_type type;
 	uint32_t hprt;
 	int ret;
@@ -1930,9 +1930,8 @@ static int uhc_dwc2_sof_enable(const struct device *const dev)
 
 static int uhc_dwc2_bus_suspend(const struct device *const dev)
 {
-	const struct uhc_dwc2_config *const config = dev->config;
 	struct uhc_dwc2_data *const priv = uhc_get_private(dev);
-	struct usb_dwc2_reg *const base = config->base;
+	struct usb_dwc2_reg *const base = uhc_dwc2_get_base(dev);
 	uint32_t hprt;
 
 	hprt = sys_read32((mem_addr_t)&base->hprt);
@@ -2249,8 +2248,8 @@ static DEVICE_API(uhc, uhc_dwc2_api) = {
 	static const struct uhc_dwc2_config uhc_dwc2_config_##n = {		\
 		UHC_DWC2_DT_INST_REG_ADDR(n),					\
 		.quirks = UHC_DWC2_VENDOR_QUIRK_GET(n),				\
-		.quirk_data = &uhc_dwc2_quirk_data_##n,				\
-		.quirk_config = &uhc_dwc2_quirk_config_##n,			\
+		.quirk_data = UHC_DWC2_VENDOR_QUIRK_DATA_GET(n),		\
+		.quirk_config = UHC_DWC2_VENDOR_QUIRK_CONFIG_GET(n),		\
 		.stack = uhc_dwc2_stack_##n,					\
 		.stack_size = K_THREAD_STACK_SIZEOF(uhc_dwc2_stack_##n),	\
 		.irq_enable_func = uhc_dwc2_irq_enable_func_##n,		\

@@ -10,6 +10,8 @@
 #include <zephyr/ztest.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/pm/device_runtime.h>
+#include <zephyr/pm/policy.h>
 LOG_MODULE_REGISTER(test);
 
 static struct k_sem top_cnt_sem;
@@ -26,7 +28,6 @@ struct counter_alarm_cfg cntr_alarm_cfg2;
 
 /* clang-format off */
 
-#define DEVICE_DT_GET_AND_COMMA(node_id) DEVICE_DT_GET(node_id),
 #define DEVICE_DT_GET_AND_COMMA_IF_NOT_SYSTEM_TIMER(node_id) \
 	COND_CODE_1(DT_HAS_CHOSEN(zephyr_system_timer), \
 		(COND_CODE_1(DT_SAME_NODE(node_id, DT_CHOSEN(zephyr_system_timer)), \
@@ -34,7 +35,7 @@ struct counter_alarm_cfg cntr_alarm_cfg2;
 		(DEVICE_DT_GET(node_id),))
 /* Generate a list of devices for all instances of the "compat" */
 #define DEVS_FOR_DT_COMPAT(compat) \
-	DT_FOREACH_STATUS_OKAY(compat, DEVICE_DT_GET_AND_COMMA)
+	DT_FOREACH_STATUS_OKAY(compat, DEVICE_DT_GET_COMMA)
 
 static const struct device *const devices[] = {
 #ifdef CONFIG_COUNTER_NRF_TIMER
@@ -280,6 +281,8 @@ static void counter_setup_instance(const struct device *dev)
 	if (!k_is_user_context()) {
 		compiler_barrier();
 		alarm_cnt = 0;
+		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+		zassert_ok(pm_device_runtime_get(dev));
 	}
 }
 
@@ -307,6 +310,10 @@ static void counter_tear_down_instance(const struct device *dev)
 	zassert_true((err == 0) || (err == -ENOTSUP),
 			"%s: Counter failed to stop (err: %d)", dev->name, err);
 
+	if (!k_is_user_context()) {
+		zassert_ok(pm_device_runtime_put(dev));
+		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+	}
 }
 
 static void test_all_instances(counter_test_func_t func,
