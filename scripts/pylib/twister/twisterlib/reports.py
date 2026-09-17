@@ -333,6 +333,7 @@ class JsonReport:
                 continue
             suite = {}
             handler_log = os.path.join(instance.build_dir, "handler.log")
+            handler_stderr_log = os.path.join(instance.build_dir, "handler_stderr.log")
             script_log = os.path.join(instance.build_dir, "twister_harness.log")
             build_log = os.path.join(instance.build_dir, "build.log")
             device_log = os.path.join(instance.build_dir, "device.log")
@@ -381,6 +382,10 @@ class JsonReport:
                     suite["log"] = self.process_log(device_log)
                 else:
                     suite["log"] = self.process_log(build_log)
+
+                stderr_output = self.process_log(handler_stderr_log)
+                if stderr_output.strip():
+                    suite["log"] = f"{suite['log']}\n{stderr_output}"
 
                 suite["reason"] = self.get_detailed_reason(instance.reason, suite["log"])  # type: ignore
                 # update the reason to get more details also in other reports (e.g. junit)
@@ -540,12 +545,18 @@ class JsonReport:
             if "undefined reference" in line:
                 return line[line.index('undefined reference') :].strip()
             elif "error: ld returned" in line:
+                # What decides the reason is the line before this one, so
+                # when this is the first line there is nothing to decide
+                # it. lines[i - 1] at i == 0 is the last line of the log,
+                # which is a different file: reports.py appends the
+                # handler's stderr to the build log before parsing.
+                previous = lines[i - 1] if i else ""
                 if last_warning:
                     return last_warning
-                elif "overflowed by" in lines[i - 1]:
+                elif "overflowed by" in previous:
                     return "ld.bfd: region overflowed"
-                elif "ld.bfd: warning: " in lines[i - 1]:
-                    return "ld.bfd:" + lines[i - 1].split("ld.bfd:", 1)[-1]
+                elif "ld.bfd: warning: " in previous:
+                    return "ld.bfd:" + previous.split("ld.bfd:", 1)[-1]
                 return line
             elif "error: " in line:
                 return line[line.index('error: ') :].strip()

@@ -174,7 +174,6 @@ struct i3c_stm32_data {
 		uint8_t addr[4];  /* List of target addresses */
 		uint8_t num_addr; /* Number of valid addresses */
 	} ibi;
-	struct k_sem ibi_lock_sem; /* Semaphore used for ibi requests */
 	bool hj_pm_lock;           /* Used as flag for setting pm */
 #endif
 
@@ -1162,8 +1161,8 @@ static int i3c_stm32_do_daa(const struct device *dev)
 
 	if (data->msg_state == STM32_I3C_MSG_ERR) {
 		i3c_stm32_clear_err(dev, false);
-		ret = -EIO;
-		goto i3c_stm32_do_daa_ending;
+		LL_I3C_EnableIT_TXFNF(i3c);
+		return -EIO;
 	}
 
 i3c_stm32_do_daa_ending:
@@ -1702,10 +1701,6 @@ static int i3c_stm32_init(const struct device *dev)
 
 	k_sem_init(&data->device_sync_sem, 0, K_SEM_MAX_LIMIT);
 
-	/* initialize semaphore used when multiple ibi requests are taking place */
-#ifdef CONFIG_I3C_USE_IBI
-	k_sem_init(&data->ibi_lock_sem, 1, 1);
-#endif
 	ret = i3c_addr_slots_init(dev);
 	if (ret != 0) {
 		LOG_ERR("Addr slots init fail, err=%d", ret);
@@ -1814,9 +1809,8 @@ static void i3c_stm32_event_isr_tx(const struct device *dev)
 		LL_I3C_DisableIT_TXFNF(i3c);
 
 		/* Find the device in the device list */
-		ret = i3c_dev_list_daa_addr_helper(&data->drv_data.attached_dev.addr_slots,
-						   &config->drv_cfg.dev_list, data->pid, false,
-						   false, &target, &dyn_addr);
+		ret = i3c_dev_list_daa_addr_helper(dev, data->pid, false, false, &target,
+						   &dyn_addr);
 		if (ret != 0) {
 			/* TODO: figure out what is the correct sequence to exit form this error
 			 * It is expected that a TX overrun error to occur which triggers err isr
@@ -1834,6 +1828,12 @@ static void i3c_stm32_event_isr_tx(const struct device *dev)
 			target->dynamic_addr = dyn_addr;
 			target->bcr = bcr;
 			target->dcr = dcr;
+
+			int aret = i3c_attach_i3c_device(target);
+
+			if (aret != 0 && aret != -EALREADY) {
+				LOG_ERR("Failed to attach target");
+			}
 		}
 
 		/* Mark the address as used */
@@ -2002,8 +2002,6 @@ static void i3c_stm32_isr_controller_ibi(const struct device *dev)
 	struct i3c_stm32_data *data = dev->data;
 	I3C_TypeDef *i3c = config->i3c;
 
-	k_sem_take(&data->ibi_lock_sem, K_FOREVER);
-
 	if (LL_I3C_IsActiveFlag_IBI(i3c)) {
 		/* Clear frame complete flag */
 		LL_I3C_ClearFlag_IBI(i3c);
@@ -2045,8 +2043,6 @@ static void i3c_stm32_isr_controller_ibi(const struct device *dev)
 			LOG_ERR("IBI Failed to enqueue hotjoin work");
 		}
 	}
-
-	k_sem_give(&data->ibi_lock_sem);
 }
 #endif /* CONFIG_I3C_USE_IBI */
 #endif /* CONFIG_I3C_CONTROLLER */

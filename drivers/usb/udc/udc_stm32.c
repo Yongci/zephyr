@@ -407,10 +407,62 @@ void HAL_PCD_SOFCallback(stm32_pcd_handle_t *hpcd)
 	udc_submit_sof_event(priv->dev);
 }
 
+void HAL_PCD_ISOOUTIncompleteCallback(stm32_pcd_handle_t *hpcd, uint8_t epnum)
+{
+	struct udc_stm32_data *priv = hpcd2data(hpcd);
+	uint8_t ep = epnum | USB_EP_DIR_OUT;
+	struct udc_ep_config *ep_cfg;
+	struct net_buf *buf;
+	stm32_status_t status;
+
+	ep_cfg = udc_get_ep_cfg(priv->dev, ep);
+	if (ep_cfg == NULL) {
+		return;
+	}
+
+	buf = udc_buf_peek(ep_cfg);
+	if (buf == NULL) {
+		return;
+	}
+
+	/* When an incomplete ISO OUT transfer occurs, the endpoint is disabled.
+	 * Re-enable the endpoint to allow reception in the remaining free space
+	 * of the buffer. HAL_PCD_DataOutStageCallback() will be called as usual
+	 * when the buffer is eventually filled.
+	 */
+	status = hal_udc_set_endpoint_receive(&priv->pcd, ep, net_buf_tail(buf),
+					      net_buf_tailroom(buf));
+	if (status != HAL_OK) {
+		LOG_ERR("ISO OUT re-enable failed(0x%02x), %d", ep, (int)status);
+	}
+}
+
+void HAL_PCD_ISOINIncompleteCallback(stm32_pcd_handle_t *hpcd, uint8_t epnum)
+{
+	/* The OTG core aborts and disables the endpoint on IISOIXFR, then calls this
+	 * instead of HAL_PCD_DataInStageCallback(). Drop the missed frame through the
+	 * normal IN completion path so that the next queued buffer gets armed.
+	 *
+	 * The ST USB IP does not report incomplete isochronous IN transfers, so this
+	 * callback is never invoked for it and HAL_PCD_DataInStageCallback() is called
+	 * as usual.
+	 */
+	HAL_PCD_DataInStageCallback(hpcd, epnum);
+}
+
 void HAL_PCDEx_SetConnectionState(stm32_pcd_handle_t *hpcd, uint8_t state)
 {
 	struct udc_stm32_data *priv = hpcd2data(hpcd);
 	const struct udc_stm32_config *cfg = priv->dev->config;
+
+#if defined(CONFIG_SOC_SERIES_STM32L1X)
+	/* On STM32L1 series, the USB D+ pull-up is controlled by software. */
+	if (state) {
+		LL_SYSCFG_EnableUSBPullUp();
+	} else {
+		LL_SYSCFG_DisableUSBPullUp();
+	}
+#endif /* CONFIG_SOC_SERIES_STM32L1X */
 
 	if (cfg->disconnect_gpio.port != NULL) {
 		gpio_pin_configure_dt(&cfg->disconnect_gpio,
@@ -758,6 +810,13 @@ static void udc_stm32_thread_handler(void *arg1, void *arg2, void *arg3)
 
 	while (true) {
 		k_msgq_get(&priv->msgq_data, &msg, K_FOREVER);
+
+		/*
+		 * Ensure we hold the device lock during processing
+		 * to avoid race conditions with API entrypoints.
+		 */
+		udc_lock_internal(dev, K_FOREVER);
+
 		switch (msg.type) {
 		case UDC_STM32_MSG_SETUP:
 			/* HAL copies SETUP packet contents to pcd.Setup */
@@ -776,6 +835,8 @@ static void udc_stm32_thread_handler(void *arg1, void *arg2, void *arg3)
 			handle_msg_data_out(priv, msg.ep, msg.rx_count);
 			break;
 		}
+
+		udc_unlock_internal(dev);
 	}
 }
 

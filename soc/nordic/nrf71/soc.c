@@ -12,17 +12,15 @@
  * for the Nordic Semiconductor nRF71 family processor.
  */
 
-#ifdef __NRF_TFM__
 #include <zephyr/autoconf.h>
-#endif
 
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
-
-#ifndef __NRF_TFM__
 #include <zephyr/cache.h>
+#ifndef __ZEPHYR__
+#include <hal/nrf_cache.h>
 #endif
 
 #if defined(NRF_APPLICATION)
@@ -32,11 +30,15 @@
 
 #include <soc.h>
 #include <nrfx.h>
+#include <helpers/nrfx_ram_ctrl.h>
 #include <lib/nrfx_coredep.h>
 
 #include <hal/nrf_spu.h>
 #include <hal/nrf_mpc.h>
 #include <hal/nrf_lfxo.h>
+#include <hal/nrf_gpio.h>
+
+#include <wicr_setup.h>
 
 LOG_MODULE_REGISTER(soc, CONFIG_SOC_LOG_LEVEL);
 
@@ -120,7 +122,6 @@ static void set_mpc_region_override(NRF_MPC_Type *mpc,
 	nrf_mpc_override_config_set(mpc, index, &override->config);
 }
 
-#if !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)
 static void mpc_configuration(void)
 {
 	ARRAY_FOR_EACH(mpc00_region_overrides, i) {
@@ -131,7 +132,6 @@ static void mpc_configuration(void)
 		set_mpc_region_override(NRF_MPC03, i, &mpc03_region_overrides[i]);
 	}
 }
-#endif
 
 /**
  * Return the SPU instance that can be used to configure the
@@ -164,26 +164,59 @@ static void ipct_configuration(void)
 #endif /* CONFIG_TRUSTED_EXECUTION_NONSECURE */
 
 #if defined(CONFIG_SOC_NRF71_WIFI_BOOT)
-#if !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE) || defined(__NRF_TFM__)
+#if (defined(NRF_APPLICATION) && !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)) || \
+	!defined(__ZEPHYR__)
+#if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_wifi_antsw)
+#define WIFI_ANTSW_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(nordic_nrf71_wifi_antsw)
+
+/* Steering an unpowered switch is meaningless: require pwr_antswc to power it. */
+BUILD_ASSERT(DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf_pwr_antswc),
+	     "wifi-antsw steering requires pwr_antswc to power the antenna switch");
+
+/*
+ * Steer the antenna switch (ANTSW) towards WLAN before the Wi-Fi core is
+ * started. This runs before the GPIO driver is up, so the pin (described in
+ * devicetree) is configured directly through the nrf_gpio HAL, which keeps the
+ * access on the P0 alias that matches the build's security state. Powering the
+ * switch is handled separately by pwr_antswc.
+ */
+static void antsw_setup(void)
+{
+	uint32_t wlan_psel = NRF_DT_GPIOS_TO_PSEL(WIFI_ANTSW_NODE, wlan_gpios);
+
+	/* Drive the pin low (WLAN) before enabling the output, then configure it
+	 * as a plain output. No pull is needed on a driven output.
+	 */
+	nrf_gpio_pin_clear(wlan_psel);
+	nrf_gpio_cfg_output(wlan_psel);
+}
+#endif /* DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_wifi_antsw) */
+
 static void wifi_setup(void)
 {
 	/* Kickstart the LMAC processor */
 	NRF_WIFICORE_LRCCONF_LRC0->POWERON =
 		(LRCCONF_POWERON_MAIN_AlwaysOn << LRCCONF_POWERON_MAIN_Pos);
-	NRF_WIFICORE_LMAC_VPR->INITPC = NRF_WICR->RESERVED[0];
+	NRF_WIFICORE_LMAC_VPR->INITPC = (uint32_t)(uintptr_t)NRF_WICR->FIRMWARE.LMACINITPC;
 	NRF_WIFICORE_LMAC_VPR->CPURUN = (VPR_CPURUN_EN_Running << VPR_CPURUN_EN_Pos);
 }
 #endif
 #endif
 
-void soc_early_init_hook(void)
+/**
+ * This function is used by TF-M (see target_cfg_71.c, nrf71_init.c). You must align the TF-M
+ * implementation if you want to change this function.
+ */
+int nordicsemi_nrf71_init(void)
 {
+#if defined(CONFIG_HAS_NORDIC_RAM_CTRL) && !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)
+	nrfx_ram_ctrl_retention_enable_all_set(false);
+#endif
+
 	/* Update the SystemCoreClock global variable with current core clock
-	 * retrieved from hardware state.
+	 * retrieved from the DT.
 	 */
-#if !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE) || defined(__NRF_TFM__)
-	/* Currently not supported for non-secure */
-	SystemCoreClockUpdate();
+	SystemCoreClock = NRF_PERIPH_GET_FREQUENCY(DT_NODELABEL(cpu));
 
 #if !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)
 	/* Skip for tf-m, configuration exist in target_cfg_71.c */
@@ -192,12 +225,28 @@ void soc_early_init_hook(void)
 	ipct_configuration();
 #endif
 
-#if defined(CONFIG_SOC_NRF71_WIFI_BOOT)
-	wifi_setup();
+#if (defined(NRF_APPLICATION) && !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)) || \
+	!defined(__ZEPHYR__)
+#if defined(CONFIG_SOC_NRF7120_WICR_SETUP)
+	int ret = wicr_setup();
+
+	if (ret != 0) {
+		LOG_ERR("WICR programming failed: %d", ret);
+		return ret;
+	}
 #endif
 
 #if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf_pwr_antswc)
+	/* Power on the antenna switch before starting the Wi-Fi core. */
 	*(volatile uint32_t *)PWR_ANTSWC_REG |= PWR_ANTSWC_ENABLE;
+#endif
+
+#if defined(CONFIG_SOC_NRF71_WIFI_BOOT)
+#if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_wifi_antsw)
+	/* Steer the (now powered) antenna switch towards WLAN before Wi-Fi boot. */
+	antsw_setup();
+#endif
+	wifi_setup();
 #endif
 
 	/* Configure LFXO capacitive load if internal load capacitors are used */
@@ -205,16 +254,19 @@ void soc_early_init_hook(void)
 	nrf_lfxo_cload_set(NRF_LFXO,
 			(uint8_t)(DT_PROP(LFXO_NODE, load_capacitance_femtofarad) / 1000));
 #endif
-#endif /* !CONFIG_TRUSTED_EXECUTION_NONSECURE || __NRF_TFM__ */
+#endif /* (NRF_APPLICATION && !CONFIG_TRUSTED_EXECUTION_NONSECURE) || !__ZEPHYR__  */
 
-#ifdef __NRF_TFM__
-	/* TF-M enables the instruction cache from target_cfg_71.c, so we
-	 * don't need to enable it here.
-	 */
-#else
-	/* Enable ICACHE */
+#ifdef __ZEPHYR__
 	sys_cache_instr_enable();
+#elif defined(NRF_ICACHE)
+	nrf_cache_enable(NRF_ICACHE);
 #endif
+	return 0;
+}
+
+void soc_early_init_hook(void)
+{
+	(void)nordicsemi_nrf71_init();
 }
 
 void arch_busy_wait(uint32_t time_us)
