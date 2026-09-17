@@ -159,9 +159,29 @@ static OSPI_RegularCmdTypeDef mspi_stm32_ospi_prepare_cmd(uint8_t cfg_mode, uint
 		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_4_LINES;
 		cmd_tmp.DataMode = HAL_OSPI_DATA_4_LINES;
 		break;
+	case MSPI_IO_MODE_QUAD_1_4_4:
+		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_4_LINES;
+		cmd_tmp.DataMode = HAL_OSPI_DATA_4_LINES;
+		break;
+	case MSPI_IO_MODE_QUAD_1_1_4:
+		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
+		cmd_tmp.DataMode = HAL_OSPI_DATA_4_LINES;
+		break;
 	case MSPI_IO_MODE_DUAL:
 		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_2_LINES;
 		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_2_LINES;
+		cmd_tmp.DataMode = HAL_OSPI_DATA_2_LINES;
+		break;
+	case MSPI_IO_MODE_DUAL_1_2_2:
+		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_2_LINES;
+		cmd_tmp.DataMode = HAL_OSPI_DATA_2_LINES;
+		break;
+	case MSPI_IO_MODE_DUAL_1_1_2:
+		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
 		cmd_tmp.DataMode = HAL_OSPI_DATA_2_LINES;
 		break;
 	default:
@@ -361,7 +381,8 @@ static int mspi_stm32_ospi_access(const struct device *dev, const struct mspi_xf
 		cmd.DataMode = HAL_OSPI_DATA_NONE;
 	}
 
-	if ((cmd.Instruction == MSPI_NOR_CMD_WREN) || (cmd.Instruction == MSPI_NOR_OCMD_WREN)) {
+	if (dev_data->ctx.xfer.addr_length == 0) {
+		/* Commands without an address phase, e.g. RDID or WREN */
 		cmd.AddressMode = HAL_OSPI_ADDRESS_NONE;
 	}
 
@@ -996,6 +1017,7 @@ static int mspi_stm32_ospi_dma_setup(const struct mspi_stm32_conf *dev_cfg,
 	}
 
 	dma_cfg.user_data = hdma;
+	dma_cfg.channel_direction = PERIPHERAL_TO_MEMORY;
 	dma_cfg.linked_channel = STM32_DMA_HAL_OVERRIDE;
 
 	ret = dma_config(dev_data->dma.dev, dev_data->dma.channel, &dma_cfg);
@@ -1004,36 +1026,17 @@ static int mspi_stm32_ospi_dma_setup(const struct mspi_stm32_conf *dev_cfg,
 		return ret;
 	}
 
-	if (dma_cfg.source_data_size != dma_cfg.dest_data_size) {
-		LOG_ERR("Source and Destination data sizes are not aligned");
-		return -EINVAL;
+	ret = dma_stm32_zcfg_to_halcfg(dev_data->dma.dev, &dma_cfg, &hdma->Init,
+				       DMA_ADDR_ADJ_NO_CHANGE, DMA_ADDR_ADJ_INCREMENT);
+	if (ret < 0) {
+		return ret;
 	}
 
-	int index = find_lsb_set(dma_cfg.source_data_size) - 1;
-
 #ifdef CONFIG_DMA_STM32U5
-	/* Fill the structure for dma init */
-	hdma->Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
-	hdma->Init.SrcInc = DMA_SINC_FIXED;
-	hdma->Init.DestInc = DMA_DINC_INCREMENTED;
-	hdma->Init.SrcDataWidth = mspi_stm32_table_src_size[index];
-	hdma->Init.DestDataWidth = mspi_stm32_table_dest_size[index];
-	hdma->Init.SrcBurstLength = 4;
-	hdma->Init.DestBurstLength = 4;
 	hdma->Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0 | DMA_DEST_ALLOCATED_PORT1;
-	hdma->Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
-#else
-	hdma->Init.PeriphDataAlignment = mspi_stm32_table_dest_size[index];
-	hdma->Init.MemDataAlignment = mspi_stm32_table_src_size[index];
-	hdma->Init.PeriphInc = DMA_PINC_DISABLE;
-	hdma->Init.MemInc = DMA_MINC_ENABLE;
-#endif /* CONFIG_DMA_STM32U5 */
+#endif
 
-	hdma->Init.Mode = DMA_NORMAL;
-	hdma->Init.Priority = mspi_stm32_table_priority[dma_cfg.channel_priority];
-	hdma->Init.Direction = DMA_PERIPH_TO_MEMORY;
 	hdma->Instance = STM32_DMA_GET_INSTANCE(dev_data->dma.reg, dev_data->dma.channel);
-	hdma->Init.Request = dma_cfg.dma_slot;
 	__HAL_LINKDMA(&dev_data->hmspi.ospi, hdma, *hdma);
 	if (HAL_DMA_Init(hdma) != HAL_OK) {
 		LOG_ERR("OSPI DMA Init failed");
@@ -1457,6 +1460,12 @@ static int mspi_stm32_ospi_pm_action(const struct device *dev, enum pm_device_ac
 #define MSPI_STM32_INIT(index)                                                                     \
 	BUILD_ASSERT(OSPI_INST_NUM(index) != 0,                                                    \
 		     "Unsupported OSPI instance: DTS node must be octospi1 or octospi2");          \
+                                                                                                   \
+	BUILD_ASSERT(MSPI_STM32_HAS_SUPPORTED_CHILD(index),                                        \
+		     "MSPI controller must have a child with compatible st,nor/st,psram-device");  \
+                                                                                                   \
+	MSPI_STM32_VALIDATE_MEMTYPE(MSPI_STM32_MEMTYPE_TOKEN(index));                              \
+                                                                                                   \
 	static const struct stm32_pclken pclken_##index[] = STM32_DT_INST_CLOCKS(index);           \
                                                                                                    \
 	PINCTRL_DT_INST_DEFINE(index);                                                             \
@@ -1494,6 +1503,8 @@ static int mspi_stm32_ospi_pm_action(const struct device *dev, enum pm_device_ac
 				.ChipSelectHighTime = 1,                                           \
 				.ClockMode = HAL_OSPI_CLOCK_MODE_0,                                \
 				.ChipSelectBoundary = DT_INST_PROP(index, st_csbound),             \
+				.DeviceSize = MSPI_STM32_INST_MEM_ADDR_BITS(index, 26),            \
+				.MemoryType = MSPI_STM32_HAL_MEMTYPE(index),                       \
 				.FreeRunningClock = HAL_OSPI_FREERUNCLK_DISABLE,                   \
 			},                                                                         \
 		},                                                                                 \

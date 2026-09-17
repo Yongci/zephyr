@@ -263,8 +263,11 @@ static inline int ipv6_handle_ext_hdr_options(struct net_pkt *pkt,
 			break;
 		case NET_IPV6_EXT_HDR_OPT_PADN:
 			NET_DBG("PADN option");
-			/* Ensure PADN doesn't exceed the extension header boundary */
-			if (opt_len > (exthdr_len - length - 2U)) {
+			/* Ensure PADN doesn't exceed the extension header
+			 * boundary. The addition cannot overflow, as opt_len is
+			 * at most 255 and length/exthdr_len are 16-bit.
+			 */
+			if ((uint32_t)opt_len + length + 2U > exthdr_len) {
 				return -EINVAL;
 			}
 
@@ -276,10 +279,14 @@ static inline int ipv6_handle_ext_hdr_options(struct net_pkt *pkt,
 
 			break;
 		default:
-			/* Make sure that the option length is not too large */
-			if (opt_len > (exthdr_len - length - 2U)) {
+			/* Make sure that the option length is not too large.
+			 * The addition cannot overflow, as opt_len is at most
+			 * 255 and length/exthdr_len are 16-bit.
+			 */
+			if ((uint32_t)opt_len + length + 2U > exthdr_len) {
 				return -EINVAL;
 			}
+
 			if (ipv6_drop_on_unknown_option(pkt, hdr,
 							opt_type, opt_type_offset)) {
 				return -ENOTSUP;
@@ -936,7 +943,14 @@ static int gen_stable_iid(uint8_t if_index,
 	}
 
 	if (!once) {
-		sys_rand_get(&secret_key, sizeof(secret_key));
+		/* The secret key must not be guessable, otherwise the
+		 * generated IIDs could be predicted. RFC 7217 ch 5
+		 */
+		if (sys_csrand_get(secret_key, sizeof(secret_key)) != 0) {
+			NET_ERR("Cannot generate secret key for stable IID");
+			return -EIO;
+		}
+
 		once = true;
 	}
 

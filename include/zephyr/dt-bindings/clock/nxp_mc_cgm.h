@@ -59,7 +59,14 @@
 #define MCUX_CMP1_CLK MCUX_MC_CGM_CLK_ID(0x22, 0x01)
 #define MCUX_CMP2_CLK MCUX_MC_CGM_CLK_ID(0x22, 0x02)
 
-#define MCUX_EMIOS_CLK MCUX_MC_CGM_CLK_ID(0x23, 0x00)
+
+/** EMIOS0 module clock: get the IP clock frequency */
+#define MCUX_EMIOS0_CLK MCUX_MC_CGM_CLK_ID(0x23, 0x00)
+/** EMIOS1 module clock: get the IP clock frequency */
+#define MCUX_EMIOS1_CLK MCUX_MC_CGM_CLK_ID(0x23, 0x01)
+/** EMIOS2 module clock: get the IP clock frequency */
+#define MCUX_EMIOS2_CLK MCUX_MC_CGM_CLK_ID(0x23, 0x02)
+
 
 #define MCUX_FLEXCAN0_CLK MCUX_MC_CGM_CLK_ID(0x24, 0x00)
 #define MCUX_FLEXCAN1_CLK MCUX_MC_CGM_CLK_ID(0x24, 0x01)
@@ -112,6 +119,8 @@
 #define MCUX_EMACRX_CLK MCUX_MC_CGM_CLK_ID(0x2C, 0x01)
 #define MCUX_EMACTX_CLK MCUX_MC_CGM_CLK_ID(0x2C, 0x02)
 #define MCUX_EMACTS_CLK MCUX_MC_CGM_CLK_ID(0x2C, 0x03)
+/** EMAC module clock: gates the IP and clocks its CSR (register) interface */
+#define MCUX_EMAC_CLK   MCUX_MC_CGM_CLK_ID(0x2C, 0x05)
 
 #define MCUX_TEMPSENSE_CLK MCUX_MC_CGM_CLK_ID(0x2C, 0x04)
 
