@@ -58,6 +58,7 @@ tests:
       - nucleo_wl55jc
       - stm32f3_disco
       - stm32h573i_dk
+      - stm32h7_renode_reference_board
       - stm32u083c_dk
     extra_args:
       - EXTRA_CONF_FILE=overlay-dma-stm32.conf
@@ -112,6 +113,7 @@ tests:
       - xg27_dk2602a
       - bg29_rb4420a
       - xg29_rb4412a
+      - kg100s_rb4332a
   drivers.adc.dma_silabs_async:
     extra_args:
       - EXTRA_CONF_FILE="overlay-dma-silabs.conf"
@@ -126,3 +128,4 @@ tests:
       - xg27_dk2602a
       - bg29_rb4420a
       - xg29_rb4412a
+      - kg100s_rb4332a
